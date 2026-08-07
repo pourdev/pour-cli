@@ -1,0 +1,37 @@
+{
+  "name": "pour-cli",
+  "version": "0.1.0",
+  "description": "Audit any URL against WCAG 2.2 from the terminal with the pour engine. Headless Chrome, structured findings, CI-friendly exit codes.",
+  "type": "module",
+  "bin": {
+    "pour": "./pour.mjs"
+  },
+  "files": [
+    "pour.mjs",
+    "engine.iife.js",
+    "filters.iife.js"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pourdev/pour-cli.git"
+  },
+  "homepage": "https://pour.dev",
+  "author": "David Yarham",
+  "license": "MIT",
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "wcag",
+    "wcag22",
+    "audit",
+    "cli",
+    "ci",
+    "testing"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.5.0"
+  }
+}
