@@ -67,6 +67,8 @@ Options:
   --exclude <sel>      CSS selector excluded from every rule
   --fail-on <what>     violations (default) | incomplete | none
   --max-nodes <n>      element details shown per rule (default 5, 0 = all)
+  --level <detail>     quiet (the totals line only) | rules (one line per
+                       rule, no elements) | max (default: everything)
   --filter <name>      screenshot the page through a vision/sensory simulation
                        instead of auditing (--filter list shows them all)
   --shot [file]        screenshot mode: save a PNG (default name derived from
@@ -131,6 +133,8 @@ const settleMs = Number(flags.get('wait') ?? 0);
 const timeoutMs = Number(flags.get('timeout') ?? 30000);
 const maxNodes = Number(flags.get('max-nodes') ?? 5);
 if ([settleMs, timeoutMs, maxNodes].some(Number.isNaN)) fail('--wait, --timeout and --max-nodes expect numbers');
+const level = String(flags.get('level') ?? 'max');
+if (!['quiet', 'rules', 'max'].includes(level)) fail(`--level expects quiet | rules | max, got "${level}"`);
 const tags = flags.has('bp') ? [...WCAG_TAGS, 'best-practice'] : WCAG_TAGS;
 const asJson = flags.has('json');
 
@@ -144,12 +148,20 @@ const tty = process.stdout.isTTY && !asJson;
 const color = (code, text) => (tty ? `\u001b[${code}m${text}\u001b[0m` : text);
 const bold = (t) => color(1, t);
 const dim = (t) => color(2, t);
+// The severity palette is the extension's own (--sev-*-vivid in
+// src/ui/styles/tokens.css): heat on the top two severities only, neutrals
+// below, review in blue. Truecolor terminals get the exact values; others
+// the nearest ANSI. Moderate is the terminal's default foreground, which is
+// what the extension's moderate resolves to in each of its themes.
+const truecolor = /truecolor|24bit/i.test(process.env.COLORTERM ?? '');
+const rgb = (r, g, b, fallback) => (truecolor ? `38;2;${r};${g};${b}` : fallback);
 const IMPACTS = [
-  { id: 'critical', paint: (t) => color('1;31', t) },
-  { id: 'serious', paint: (t) => color(31, t) },
-  { id: 'moderate', paint: (t) => color(33, t) },
-  { id: 'minor', paint: (t) => color(36, t) },
+  { id: 'critical', paint: (t) => color(`1;${rgb(255, 82, 51, 91)}`, t) },
+  { id: 'serious', paint: (t) => color(rgb(245, 197, 24, 33), t) },
+  { id: 'moderate', paint: (t) => t },
+  { id: 'minor', paint: (t) => color(rgb(138, 143, 152, 90), t) },
 ];
+const reviewMark = (t) => color(rgb(96, 165, 250, 94), t);
 const impactRank = new Map(IMPACTS.map((impact, i) => [impact.id, i]));
 const paintImpact = (id, text = id) => (IMPACTS.find((i) => i.id === id)?.paint ?? dim)(text);
 
@@ -396,41 +408,59 @@ if (asJson) {
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const seconds = (results.durationMs / 1000).toFixed(1);
 
-  console.log(`\n${bold('pour')} ${dim('·')} ${url}`);
-  console.log(dim(`engine ${results.testEngine.version} · ${viewport.width}x${viewport.height} · ${flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'} · ${seconds}s`));
+  // --level quiet keeps only the totals line below, for scripts and quick
+  // checks; rules keeps the per-rule lines but drops the element details.
+  if (level !== 'quiet') {
+    console.log(`\n${bold('pour')} ${dim('·')} ${url}`);
+    console.log(dim(`engine ${results.testEngine.version} · ${viewport.width}x${viewport.height} · ${flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'} · ${seconds}s`));
 
-  const sorted = [...results.violations].sort((a, b) =>
-    (impactRank.get(a.impact) ?? 9) - (impactRank.get(b.impact) ?? 9) || b.nodes.length - a.nodes.length);
+    const sorted = [...results.violations].sort((a, b) =>
+      (impactRank.get(a.impact) ?? 9) - (impactRank.get(b.impact) ?? 9) || b.nodes.length - a.nodes.length);
 
-  if (!sorted.length) {
-    console.log(`\n${color(32, '✓')} no violations found`);
-  } else {
-    console.log(`\n${bold(`VIOLATIONS`)} ${dim(`(${plural(sorted.length, 'rule')}, ${plural(totalNodes(sorted), 'element')})`)}`);
-    for (const rule of sorted) {
-      const scs = [...new Set(rule.tags.map(toSc).filter(Boolean))];
-      console.log(`\n  ${paintImpact(rule.impact, '●')} ${paintImpact(rule.impact)}  ${bold(rule.id)} ${dim(`· ${plural(rule.nodes.length, 'element')}${scs.length ? ` · ${scs.join(', ')}` : ''}`)}`);
-      console.log(`    ${rule.help}`);
-      const shown = maxNodes === 0 ? rule.nodes : rule.nodes.slice(0, maxNodes);
-      shown.forEach((node, i) => {
-        console.log(`    ${dim(`${i + 1}.`)} ${node.target[0]}`);
-        const message = (node.failureSummary || '').split('\n')[0];
-        if (message) console.log(`       ${dim(message)}`);
-      });
-      if (rule.nodes.length > shown.length) console.log(dim(`       … ${rule.nodes.length - shown.length} more (--max-nodes 0 shows all)`));
+    if (!sorted.length) {
+      console.log(`\n${color(32, '✓')} no violations found`);
+    } else {
+      console.log(`\n${bold(`VIOLATIONS`)} ${dim(`(${plural(sorted.length, 'rule')}, ${plural(totalNodes(sorted), 'element')})`)}`);
+      // At the rules level the lines form a table: severity, id and count
+      // are padded into columns (on the plain strings — ANSI escapes would
+      // defeat padEnd), so the eye can scan a column instead of a ragged edge.
+      const idWidth = Math.max(...sorted.map((rule) => rule.id.length));
+      const countWidth = Math.max(...sorted.map((rule) => String(rule.nodes.length).length));
+      for (const rule of sorted) {
+        const scs = [...new Set(rule.tags.map(toSc).filter(Boolean))];
+        if (level !== 'max') {
+          const count = `${String(rule.nodes.length).padStart(countWidth)} ${rule.nodes.length === 1 ? 'element ' : 'elements'}`;
+          console.log(`  ${paintImpact(rule.impact, '●')} ${paintImpact(rule.impact, rule.impact.padEnd(8))}  ${bold(rule.id.padEnd(idWidth))}  ${dim(`${count}${scs.length ? `  ${scs.join(', ')}` : ''}`.trimEnd())}`);
+          continue;
+        }
+        console.log(`\n  ${paintImpact(rule.impact, '●')} ${paintImpact(rule.impact)}  ${bold(rule.id)} ${dim(`· ${plural(rule.nodes.length, 'element')}${scs.length ? ` · ${scs.join(', ')}` : ''}`)}`);
+        console.log(`    ${rule.help}`);
+        const shown = maxNodes === 0 ? rule.nodes : rule.nodes.slice(0, maxNodes);
+        shown.forEach((node, i) => {
+          console.log(`    ${dim(`${i + 1}.`)} ${node.target[0]}`);
+          const message = (node.failureSummary || '').split('\n')[0];
+          if (message) console.log(`       ${dim(message)}`);
+        });
+        if (rule.nodes.length > shown.length) console.log(dim(`       … ${rule.nodes.length - shown.length} more (--max-nodes 0 shows all)`));
+      }
     }
-  }
 
-  if (results.incomplete.length) {
-    console.log(`\n${bold('NEEDS REVIEW')} ${dim(`(${plural(results.incomplete.length, 'rule')}, ${plural(totalNodes(results.incomplete), 'element')} — the engine abstains rather than guess)`)}`);
-    for (const rule of results.incomplete) {
-      console.log(`  ${color(35, '◐')} ${rule.id} ${dim(`· ${plural(rule.nodes.length, 'element')}`)}`);
+    if (results.incomplete.length) {
+      console.log(`\n${bold('NEEDS REVIEW')} ${dim(`(${plural(results.incomplete.length, 'rule')}, ${plural(totalNodes(results.incomplete), 'element')} — the engine abstains rather than guess)`)}`);
+      const reviewWidth = Math.max(...results.incomplete.map((rule) => rule.id.length));
+      for (const rule of results.incomplete) {
+        console.log(level !== 'max'
+          ? `  ${reviewMark('◐')} ${rule.id.padEnd(reviewWidth)}  ${dim(plural(rule.nodes.length, 'element'))}`
+          : `  ${reviewMark('◐')} ${rule.id} ${dim(`· ${plural(rule.nodes.length, 'element')}`)}`);
+      }
     }
   }
 
   const counts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
   for (const rule of results.violations) counts[rule.impact] = (counts[rule.impact] ?? 0) + rule.nodes.length;
   const summary = IMPACTS.filter(({ id }) => counts[id]).map(({ id }) => paintImpact(id, `${counts[id]} ${id}`)).join(dim(' · '));
-  console.log(`\n${summary || color(32, 'clean')}${results.incomplete.length ? dim(` · ${totalNodes(results.incomplete)} to review`) : ''}\n`);
+  const totals = `${summary || color(32, 'clean')}${results.incomplete.length ? dim(` · ${totalNodes(results.incomplete)} to review`) : ''}`;
+  console.log(level === 'quiet' ? totals : `\n${totals}\n`);
 }
 
 const failed = (failOn === 'violations' && results.violations.length > 0)
