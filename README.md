@@ -37,6 +37,8 @@ pour <url> [options]
   --exclude <sel>      CSS selector excluded from every rule
   --fail-on <what>     violations (default) | incomplete | none
   --max-nodes <n>      element details shown per rule (default 5, 0 = all)
+  --level <detail>     quiet (the totals line only) | rules (one line per
+                       rule, no elements) | max (default: everything)
   --filter <name>      screenshot the page through a vision/sensory simulation
                        instead of auditing (--filter list shows them all)
   --shot [file]        screenshot mode: save a PNG (default name derived from
@@ -80,8 +82,12 @@ the DOM; that changes the numbers too, by design.
 ## CI
 
 ```yaml
-- run: npx pour-cli https://staging.example.com --fail-on violations
+- run: npx pour-cli https://staging.example.com --fail-on violations --level quiet
 ```
+
+`--level quiet` keeps the log to the one totals line; the exit code still
+carries the verdict. Drop it (or use `--level rules`) when you want the
+findings in the CI log too.
 
 ## License
 
