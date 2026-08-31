@@ -1,6 +1,6 @@
 {
   "name": "pour-cli",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "description": "Audit any URL against WCAG 2.2 from the terminal with the pour engine. Headless Chrome, structured findings, CI-friendly exit codes.",
   "type": "module",
   "bin": {
