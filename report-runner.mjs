@@ -2,7 +2,7 @@
 
 // scripts/report/run.mjs
 import fs5 from "node:fs";
-import path6 from "node:path";
+import path5 from "node:path";
 import readline2 from "node:readline";
 import dns from "node:dns/promises";
 import { spawn, execFile } from "node:child_process";
@@ -7588,11 +7588,6 @@ function summarize(t, opts = {}) {
 
 // scripts/report/lists.mjs
 import fs2 from "node:fs";
-import path3 from "node:path";
-import zlib from "node:zlib";
-var TRANCO_API = "https://tranco-list.eu/api/lists/date/latest";
-var CRUX_DIR_API = "https://api.github.com/repos/zakird/crux-top-lists/contents/data/global";
-var CRUX_RAW = "https://raw.githubusercontent.com/zakird/crux-top-lists/main/data/global";
 var permanentReason = (row) => {
   if (row.reason === "unreachable") return row.detail === "not a hostname" ? "not a hostname" : /ERR_NAME_NOT_RESOLVED/.test(row.detail ?? "") ? "name does not resolve" : null;
   if (row.reason === "http-error") return /HTTP (404|410)/.test(row.detail ?? "") ? row.detail : null;
@@ -7646,80 +7641,17 @@ function writeList(file, rows) {
   const csv = rows.map((r) => `${r.rank},${r.url ? r.url.replace(/\/$/, "") : r.domain}${r.tier != null ? `,${r.tier}` : ""}${r.tag ? `,${r.tag.reason.replace(/,/g, ";")},${r.tag.date}` : ""}`).join("\n") + "\n";
   fs2.writeFileSync(file, csv);
 }
-function carriedTags(dir, prefix, exceptFile) {
-  const previous = fs2.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith(".csv") && path3.join(dir, f) !== exceptFile).map((f) => path3.join(dir, f)).sort((a, b) => fs2.statSync(b).mtimeMs - fs2.statSync(a).mtimeMs)[0];
-  const carried = /* @__PURE__ */ new Map();
-  if (previous) {
-    for (const r of readList(previous)) if (r.tag) carried.set(r.domain, r.tag);
-  }
-  return { carried, previous };
-}
-async function resolveCrux(dir, count2 = 1e5) {
-  fs2.mkdirSync(dir, { recursive: true });
-  const listing = await (await fetch(CRUX_DIR_API, { headers: { "user-agent": "pour-report" } })).json();
-  const months = listing.map((f) => f.name).filter((n) => /^\d{6}\.csv\.gz$/.test(n)).sort();
-  const id = months.at(-1)?.slice(0, 6);
-  if (!id) throw new Error("could not find a CrUX monthly file in the mirror");
-  const date = `${id.slice(0, 4)}-${id.slice(4)}-01`;
-  const file = path3.join(dir, `crux-${id}.csv`);
-  if (!fs2.existsSync(file)) {
-    console.log(`downloading the CrUX top list for ${id.slice(0, 4)}-${id.slice(4)}\u2026`);
-    const res = await fetch(`${CRUX_RAW}/${id}.csv.gz`);
-    if (!res.ok) throw new Error(`CrUX download failed: HTTP ${res.status}`);
-    const text = zlib.gunzipSync(Buffer.from(await res.arrayBuffer())).toString("utf8");
-    const { carried, previous } = carriedTags(dir, "crux-", file);
-    const rows = [];
-    for (const line of text.split("\n")) {
-      const [origin, tier] = line.trim().split(",");
-      if (!origin || !/^https?:\/\//.test(origin) || Number(tier) > count2) continue;
-      let host2;
-      try {
-        host2 = new URL(origin).hostname.toLowerCase().replace(/^www\./, "");
-      } catch {
-        continue;
-      }
-      rows.push({ rank: rows.length + 1, domain: host2, url: `${origin}/`, tier: Number(tier), tag: carried.get(host2) ?? null });
-    }
-    writeList(file, rows);
-    console.log(`saved ${path3.relative(process.cwd(), file)}: ${rows.length} origins, ${carried.size ? `${rows.filter((r) => r.tag).length} tags carried over from ${path3.basename(previous)}` : "no earlier tags"}`);
-  }
-  return { file, id, date, source: "crux", name: "Chrome UX Report top sites", url: "https://github.com/zakird/crux-top-lists" };
-}
-async function resolveTranco(dir, count2 = 1e5) {
-  fs2.mkdirSync(dir, { recursive: true });
-  const meta2 = await (await fetch(TRANCO_API)).json();
-  const id = meta2.list_id;
-  const date = String(meta2.created_on ?? "").slice(0, 10);
-  const file = path3.join(dir, `tranco-${id}.csv`);
-  if (!fs2.existsSync(file)) {
-    const { carried, previous } = carriedTags(dir, "tranco-", file);
-    console.log(`downloading Tranco list ${id} (${date})\u2026`);
-    const res = await fetch(`https://tranco-list.eu/download/${id}/${count2}`);
-    if (!res.ok) throw new Error(`Tranco download failed: HTTP ${res.status}`);
-    const text = await res.text();
-    const rows = [];
-    for (const line of text.split("\n")) {
-      const [rank, domain] = line.trim().split(",");
-      if (!rank || !domain) continue;
-      const d = domain.toLowerCase();
-      rows.push({ rank: Number(rank), domain: d, tag: carried.get(d) ?? null });
-    }
-    writeList(file, rows);
-    console.log(`saved ${path3.relative(process.cwd(), file)}: ${rows.length} domains, ${carried.size ? `${rows.filter((r) => r.tag).length} tags carried over from ${path3.basename(previous)}` : "no earlier tags"}`);
-  }
-  return { file, id, date, source: "tranco", name: "Tranco", url: "https://tranco-list.eu" };
-}
 
 // scripts/report/render.mjs
 import fs4 from "node:fs";
-import path5 from "node:path";
+import path4 from "node:path";
 import readline from "node:readline";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import crypto from "node:crypto";
 
 // scripts/report/html.mjs
 import fs3 from "node:fs";
-import path4 from "node:path";
+import path3 from "node:path";
 
 // src/ui/impact-donut.js
 var R = 42;
@@ -8825,8 +8757,8 @@ ${body}
 `;
 }
 function writePage(slug2, html) {
-  const outFile = path4.join(rootDir, "src", "site", "public", "audit", slug2, "index.html");
-  fs3.mkdirSync(path4.dirname(outFile), { recursive: true });
+  const outFile = path3.join(rootDir, "src", "site", "public", "audit", slug2, "index.html");
+  fs3.mkdirSync(path3.dirname(outFile), { recursive: true });
   fs3.writeFileSync(outFile, html);
   return outFile;
 }
@@ -8834,8 +8766,8 @@ function writePage(slug2, html) {
 // scripts/report/render.mjs
 var HOLD_ROWS = 3e3;
 async function render(runDir2, { publicCopy = true } = {}) {
-  const status = JSON.parse(fs4.readFileSync(path5.join(runDir2, "status.json"), "utf8"));
-  useAdultList(path5.join(rootDir, "reports", "audit", "lists", "adult", "domains"));
+  const status = JSON.parse(fs4.readFileSync(path4.join(runDir2, "status.json"), "utf8"));
+  useAdultList(path4.join(rootDir, "reports", "audit", "lists", "adult", "domains"));
   const isSite2 = status.kind === "site";
   const engineName = "the pour engine";
   const engineLead = "The pour engine";
@@ -8843,7 +8775,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
   const tally2 = createTally();
   const held = /* @__PURE__ */ new Map();
   let total = 0;
-  const rl = readline.createInterface({ input: fs4.createReadStream(path5.join(runDir2, "progress.jsonl")), crlfDelay: Infinity });
+  const rl = readline.createInterface({ input: fs4.createReadStream(path4.join(runDir2, "progress.jsonl")), crlfDelay: Infinity });
   const latest = /* @__PURE__ */ new Map();
   const retried = /* @__PURE__ */ new Map();
   let recovered2 = 0;
@@ -8875,11 +8807,12 @@ async function render(runDir2, { publicCopy = true } = {}) {
   }
   const s = summarize(tally2, { minGroup: 10 });
   const rows = [...held.values()];
-  const summaryFile = path5.join(runDir2, "summary.json");
+  const summaryFile = path4.join(runDir2, "summary.json");
   fs4.writeFileSync(summaryFile, JSON.stringify({ ...s, recent: void 0, meta: { ...status, summary: void 0, inflight: void 0, backoffs: void 0 } }, null, 2));
   const generated = (/* @__PURE__ */ new Date()).toISOString();
   const runDate = longDate(generated);
   const what = isSite2 ? "pages" : "sites";
+  const pagesOf = (n) => `${int(n)} ${n === 1 ? "page" : "pages"}`;
   const audited2 = rows.filter((r) => r.status === "audited");
   const skipped2 = rows.filter((r) => r.status !== "audited");
   const partial = !!status.paused;
@@ -8906,8 +8839,8 @@ async function render(runDir2, { publicCopy = true } = {}) {
       heading = `${escapeHtml(status.site)}, page by page.`;
       eyebrow = `Site audit \xB7 ${escapeHtml(runDate)}${partial ? " \xB7 in progress" : ""}`;
       title = `${escapeHtml(status.site)}, audited page by page \xB7 pour`;
-      description = `The pour engine over ${int(s.pages)} pages of ${status.site}: how many fail WCAG 2.2 AA, what fails most, and where on each page.`;
-      intro = `${engineLead} ran over ${int(s.pages)} pages of <a href="${escapeHtml(status.start)}" rel="external">${escapeHtml(status.site)}</a>,
+      description = `The pour engine over ${pagesOf(s.pages)} of ${status.site}: how many fail WCAG 2.2 AA, what fails most, and where on each page.`;
+      intro = `${engineLead} ran over ${pagesOf(s.pages)} of <a href="${escapeHtml(status.start)}" rel="external">${escapeHtml(status.site)}</a>,
           following links from the front page${status.sameHost ? "" : " across the site and its subdomains"}. Each page was
           loaded once in a desktop window and checked against WCAG&nbsp;2.2 AA. No scrolling,
           no clicking. The numbers count what the engine could prove; checks that need a person are
@@ -8928,7 +8861,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
       ${rows.length && !publicPage ? `
       <section class="docs" id="every" aria-labelledby="every-title">
         <h2 id="every-title">Every page</h2>
-        <p>All ${int(audited2.length)} pages and what the engine found on each.</p>
+        <p>All ${pagesOf(audited2.length)} and what the engine found on each.</p>
         ${(() => {
         const t = `${table(
           [["Page", false], ["Depth", true], ["Failing", true], ["Rules", true], ["Review", true], ["Elements", true]],
@@ -9017,7 +8950,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
       ${rows.length && !publicPage ? `
       <section class="docs" id="every" aria-labelledby="every-title">
         <h2 id="every-title">Every page</h2>
-        <p>All ${int(audited2.length)} pages in list order and what the engine found on each.</p>
+        <p>All ${pagesOf(audited2.length)} in list order and what the engine found on each.</p>
         ${disclosure(audited2.length, `Every page, ${int(audited2.length)} rows`, `${table(
         [["Rank", true], ["Site", false], ["Failing", true], ["Rules", true], ["Review", true], ["Elements", true]],
         audited2.sort((a, b) => a.rank - b.rank).map((r) => `<tr>${num(int(r.rank))}<th scope="row">${pageLink(r)}</th>${num(int(r.violationElements))}${num(int(r.violations.length))}${num(int(r.reviewElements))}${num(int(r.elements))}</tr>`).join(""),
@@ -9059,7 +8992,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
     }
     let share = null;
     const slugPath = status.mode === "top" && status.month ? `${status.slug}/${status.month}` : status.slug;
-    const cardFile = status.month ? path5.join(rootDir, "src", "site", "public", "assets", "img", `og-top-100k-${status.month}.jpg`) : null;
+    const cardFile = status.month ? path4.join(rootDir, "src", "site", "public", "assets", "img", `og-top-100k-${status.month}.jpg`) : null;
     if (cardFile && fs4.existsSync(cardFile) && status.slug.startsWith("top-")) {
       const v = crypto.createHash("sha256").update(fs4.readFileSync(cardFile)).digest("hex").slice(0, 10);
       share = {
@@ -9090,10 +9023,10 @@ async function render(runDir2, { publicCopy = true } = {}) {
     });
     return html;
   }
-  const fullFile = path5.join(runDir2, "report.html");
+  const fullFile = path4.join(runDir2, "report.html");
   fs4.writeFileSync(fullFile, build(false));
   const outFile = publicCopy ? writePage(status.mode === "top" && status.month ? `${status.slug}/${status.month}` : status.slug, build(true)) : fullFile;
-  return `report: ${path5.relative(process.cwd(), outFile) || outFile} \xB7 ${int(s.pages)} pages, ${pc(s.failingPct)} with failures, ${dec(s.meanFailing)} failing elements per page (median ${int(s.medianFailing)})${partial ? " \xB7 run not finished" : ""}`;
+  return `report: ${path4.relative(process.cwd(), outFile) || outFile} \xB7 ${pagesOf(s.pages)}, ${pc(s.failingPct)} with failures, ${dec(s.meanFailing)} failing elements per page (median ${int(s.medianFailing)})${partial ? " \xB7 run not finished" : ""}`;
 }
 function breadthSection(s, briefLink, what = "pages") {
   return `
@@ -9160,9 +9093,9 @@ function delta(before, after, unit) {
   return `${d > 0 ? "up" : "down"} ${dec(Math.abs(d))}${unit ? ` ${unit}` : ""}`;
 }
 function allMonths(runDir2) {
-  const parent = path5.dirname(runDir2);
+  const parent = path4.dirname(runDir2);
   return fs4.readdirSync(parent).filter((f) => /^\d{4}-\d{2}$/.test(f)).sort().map((m) => {
-    const file = path5.join(parent, m, "summary.json");
+    const file = path4.join(parent, m, "summary.json");
     if (!fs4.existsSync(file)) return null;
     try {
       return { month: m, ...JSON.parse(fs4.readFileSync(file, "utf8")) };
@@ -9172,10 +9105,10 @@ function allMonths(runDir2) {
   }).filter(Boolean);
 }
 function previousMonth(runDir2, month) {
-  const parent = path5.dirname(runDir2);
+  const parent = path4.dirname(runDir2);
   const months = fs4.readdirSync(parent).filter((f) => /^\d{4}-\d{2}$/.test(f) && f < month).sort();
   for (const m of months.reverse()) {
-    const file = path5.join(parent, m, "summary.json");
+    const file = path4.join(parent, m, "summary.json");
     if (fs4.existsSync(file)) {
       try {
         return { month: m, ...JSON.parse(fs4.readFileSync(file, "utf8")) };
@@ -9186,8 +9119,8 @@ function previousMonth(runDir2, month) {
   return null;
 }
 if (process.argv[1] === fileURLToPath2(import.meta.url) && /render\.mjs$/.test(process.argv[1])) {
-  const dir = path5.resolve(process.argv[2] ?? "");
-  if (!fs4.existsSync(path5.join(dir, "status.json"))) {
+  const dir = path4.resolve(process.argv[2] ?? "");
+  if (!fs4.existsSync(path4.join(dir, "status.json"))) {
     console.error("usage: render.mjs <run dir with status.json and progress.jsonl>");
     process.exit(1);
   }
@@ -9195,8 +9128,8 @@ if (process.argv[1] === fileURLToPath2(import.meta.url) && /render\.mjs$/.test(p
 }
 
 // scripts/report/run.mjs
-var homeDir = path6.dirname(fileURLToPath3(import.meta.url));
-var packaged = fs5.existsSync(path6.join(homeDir, "engine.iife.js"));
+var homeDir = path5.dirname(fileURLToPath3(import.meta.url));
+var packaged = fs5.existsSync(path5.join(homeDir, "engine.iife.js"));
 var args = process.argv.slice(2);
 var VALUE_FLAGS = /* @__PURE__ */ new Set(["--workers", "--pause", "--count", "--max", "--viewport", "--depth", "--port", "--top", "--load", "--timeout", "--source", "--month", "--out", "--report"]);
 var target;
@@ -9209,12 +9142,16 @@ for (let i = 0; i < args.length; i++) {
   break;
 }
 if (!target) {
-  console.error('Name a target: a URL, a list file, or "top" (the Tranco ranking, --top N). See the header of scripts/report/run.mjs.');
+  console.error(packaged ? "Name a target: a URL or a list file." : 'Name a target: a URL, a list file, or "top" (the monthly study, --top N). See the header of scripts/report/run.mjs.');
+  process.exit(1);
+}
+if (target === "top" && packaged) {
+  console.error("The monthly study is not part of pour-cli. Give pour report a URL or a list file.");
   process.exit(1);
 }
 var mode = target === "top" ? "top" : /^[a-z]+:\/\//i.test(target) ? "site" : fs5.existsSync(target) ? "list" : /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(target) ? "site" : null;
 if (!mode) {
-  console.error(`Cannot tell what "${target}" is: not a URL, not a file I can find, not "top".`);
+  console.error(`Cannot tell what "${target}" is: not a URL, not a file I can find${packaged ? "" : ', not "top"'}.`);
   process.exit(1);
 }
 var topN = Number(flagValue("--top", 1e5));
@@ -9263,11 +9200,11 @@ var localStamp = () => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 };
 var thisMonth = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
-var outDir = flagValue("--out") ? path6.resolve(String(flagValue("--out"))) : null;
-var showDir = (dir) => path6.relative(process.cwd(), dir) || dir;
-var auditsDir = outDir ?? (packaged ? path6.resolve("pour-reports") : path6.join(rootDir, "reports", "audit"));
+var outDir = flagValue("--out") ? path5.resolve(String(flagValue("--out"))) : null;
+var showDir = (dir) => path5.relative(process.cwd(), dir) || dir;
+var auditsDir = outDir ?? (packaged ? path5.resolve("pour-reports") : path5.join(rootDir, "reports", "audit"));
 var renderOptions = { publicCopy: !outDir && !packaged };
-var reportFile = flagValue("--report") ? path6.resolve(String(flagValue("--report"))) : null;
+var reportFile = flagValue("--report") ? path5.resolve(String(flagValue("--report"))) : null;
 if (reportFile && !/\.html?$/i.test(reportFile)) {
   console.error(`--report expects an .html file path, got "${flagValue("--report")}"`);
   process.exit(1);
@@ -9275,8 +9212,8 @@ if (reportFile && !/\.html?$/i.test(reportFile)) {
 async function renderRun() {
   const message = await render(runDir, renderOptions);
   if (!reportFile) return message;
-  fs5.mkdirSync(path6.dirname(reportFile), { recursive: true });
-  fs5.copyFileSync(path6.join(runDir, "report.html"), reportFile);
+  fs5.mkdirSync(path5.dirname(reportFile), { recursive: true });
+  fs5.copyFileSync(path5.join(runDir, "report.html"), reportFile);
   return `${message}
 saved ${showDir(reportFile)}`;
 }
@@ -9289,14 +9226,15 @@ var startUrl = null;
 var host = null;
 var site = null;
 if (mode === "top") {
-  listMeta = await (source === "tranco" ? resolveTranco : resolveCrux)(path6.join(auditsDir, "lists"), topN);
+  const { resolveTranco, resolveCrux } = await import(new URL("./top-lists.mjs", import.meta.url).href);
+  listMeta = await (source === "tranco" ? resolveTranco : resolveCrux)(path5.join(auditsDir, "lists"), topN);
   listFile = listMeta.file;
   slug = `top-${topN % 1e3 === 0 ? `${topN / 1e3}k` : topN}${source === "tranco" ? "-tranco" : ""}`;
   label = `The top ${topN.toLocaleString("en-US")}`;
 } else if (mode === "list") {
-  listFile = path6.resolve(target);
-  slug = path6.basename(listFile).replace(/\.[a-z]+$/i, "").toLowerCase().replace(/[^a-z0-9-]+/g, "-");
-  label = path6.basename(listFile);
+  listFile = path5.resolve(target);
+  slug = path5.basename(listFile).replace(/\.[a-z]+$/i, "").toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+  label = path5.basename(listFile);
 } else {
   startUrl = new URL(target);
   host = startUrl.hostname.toLowerCase();
@@ -9310,17 +9248,17 @@ if (listFile) {
   list = fullList;
 }
 if (mode === "top") list = fullList.filter((r) => r.rank <= topN);
-var slugDir = path6.join(auditsDir, slug);
+var slugDir = path5.join(auditsDir, slug);
 fs5.mkdirSync(slugDir, { recursive: true });
 function pickRunDir() {
-  if (mode === "top") return path6.join(slugDir, flagValue("--month") && /^\d{4}-\d{2}$/.test(flagValue("--month")) ? flagValue("--month") : thisMonth());
+  if (mode === "top") return path5.join(slugDir, flagValue("--month") && /^\d{4}-\d{2}$/.test(flagValue("--month")) ? flagValue("--month") : thisMonth());
   const runs = fs5.readdirSync(slugDir).filter((f) => /^\d{4}-\d{2}-\d{2}-\d{4}$/.test(f)).sort();
   const latest = runs.at(-1);
   if (latest && !fresh) {
-    const status = readJson(path6.join(slugDir, latest, "status.json"));
-    if (status && (!status.done || recheck || renderOnly)) return path6.join(slugDir, latest);
+    const status = readJson(path5.join(slugDir, latest, "status.json"));
+    if (status && (!status.done || recheck || renderOnly)) return path5.join(slugDir, latest);
   }
-  return path6.join(slugDir, localStamp());
+  return path5.join(slugDir, localStamp());
 }
 function readJson(file) {
   try {
@@ -9330,8 +9268,8 @@ function readJson(file) {
   }
 }
 var runDir = pickRunDir();
-if (fresh && fs5.existsSync(path6.join(runDir, "progress.jsonl"))) {
-  const existing = readJson(path6.join(runDir, "status.json"));
+if (fresh && fs5.existsSync(path5.join(runDir, "progress.jsonl"))) {
+  const existing = readJson(path5.join(runDir, "status.json"));
   const summary = existing ? `${existing.audited ?? 0} pages audited, ${existing.skipped ?? 0} skipped${existing.done ? ", finished" : existing.paused ? ", stopped" : ""}` : "a run in progress";
   if (!hasFlag("--yes")) {
     if (!process.stdin.isTTY) {
@@ -9346,11 +9284,11 @@ if (fresh && fs5.existsSync(path6.join(runDir, "progress.jsonl"))) {
       process.exit(0);
     }
   }
-  for (const f of ["progress.jsonl", "status.json", "summary.json"]) fs5.rmSync(path6.join(runDir, f), { force: true });
+  for (const f of ["progress.jsonl", "status.json", "summary.json"]) fs5.rmSync(path5.join(runDir, f), { force: true });
 }
 fs5.mkdirSync(runDir, { recursive: true });
-var progressFile = path6.join(runDir, "progress.jsonl");
-var statusFile = path6.join(runDir, "status.json");
+var progressFile = path5.join(runDir, "progress.jsonl");
+var statusFile = path5.join(runDir, "status.json");
 var prior = readJson(statusFile);
 var tally = createTally();
 var inflight = /* @__PURE__ */ new Map();
@@ -9413,12 +9351,12 @@ var meta = {
   mode,
   slug,
   label,
-  target: startUrl?.toString() ?? path6.basename(listFile),
+  target: startUrl?.toString() ?? path5.basename(listFile),
   start: startUrl?.toString() ?? null,
   host,
   site,
   sameHost,
-  list: listMeta ? { file: path6.basename(listFile), id: listMeta.id, date: listMeta.date, source: listMeta.source, name: listMeta.name, url: listMeta.url } : listFile ? { file: path6.basename(listFile) } : null,
+  list: listMeta ? { file: path5.basename(listFile), id: listMeta.id, date: listMeta.date, source: listMeta.source, name: listMeta.name, url: listMeta.url } : listFile ? { file: path5.basename(listFile) } : null,
   total: list?.length ?? null,
   count: isSite ? max : Number.isFinite(count) ? count : list?.length ?? null,
   engineVersion: project_config_default.engine.version,
@@ -9432,7 +9370,7 @@ var meta = {
   pauseMs: politeMs,
   startedAt: prior?.startedAt ?? Date.now(),
   activeMs: prior?.activeMs ?? 0,
-  month: mode === "top" ? path6.basename(runDir) : null,
+  month: mode === "top" ? path5.basename(runDir) : null,
   topN: mode === "top" ? topN : null,
   engine: { id: "pour", name: project_config_default.engine.name, version: project_config_default.engine.version }
 };
@@ -9522,7 +9460,7 @@ function normalise(href, base) {
 }
 var openReport = () => new Promise((resolve) => {
   if (hasFlag("--no-open") || process.platform !== "darwin") return resolve();
-  execFile("open", [reportFile ?? path6.join(runDir, "report.html")], () => resolve());
+  execFile("open", [reportFile ?? path5.join(runDir, "report.html")], () => resolve());
 });
 if (renderOnly) {
   if (!done.size) {
@@ -9551,11 +9489,11 @@ async function launchBrowser() {
       return await puppeteer.launch(opts);
     } catch {
     }
-    const cache = path6.join(process.env.HOME ?? "", "Library", "Caches", "ms-playwright");
+    const cache = path5.join(process.env.HOME ?? "", "Library", "Caches", "ms-playwright");
     if (fs5.existsSync(cache)) {
       for (const dir of fs5.readdirSync(cache).filter((d) => /^chromium-\d+$/.test(d)).sort().reverse()) {
         for (const candidate of ["chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing", "chrome-mac/Chromium.app/Contents/MacOS/Chromium", "chrome-linux/chrome"]) {
-          const bin = path6.join(cache, dir, candidate);
+          const bin = path5.join(cache, dir, candidate);
           if (fs5.existsSync(bin)) return puppeteer.launch({ ...opts, executablePath: bin });
         }
       }
@@ -9996,7 +9934,7 @@ async function worker() {
 var askedPort = Number(flagValue("--port", mode === "top" ? 8770 : 8771));
 var port = await freePort(askedPort);
 if (port !== askedPort) console.log(`port ${askedPort} is in use, another run's screen most likely; this run's screen is on ${port}`);
-var screenScript = packaged ? path6.join(homeDir, "report-screen.mjs") : path6.join(rootDir, "scripts", "report", "serve.mjs");
+var screenScript = packaged ? path5.join(homeDir, "report-screen.mjs") : path5.join(rootDir, "scripts", "report", "serve.mjs");
 var screen = spawn(process.execPath, [screenScript, runDir, "--port", String(port)], { stdio: ["ignore", "inherit", "inherit"] });
 writeStatus({}, true);
 if (!hasFlag("--no-open") && process.platform === "darwin") setTimeout(() => execFile("open", [`http://127.0.0.1:${port}`]), 800);
@@ -10022,7 +9960,7 @@ async function finish(complete) {
       if (why && !entry.tag) entry.tag = { reason: why, date };
     }
     writeList(listFile, fullList);
-    console.log(`tagged ${newTags.size} domains as unavailable in ${path6.relative(rootDir, listFile)}`);
+    console.log(`tagged ${newTags.size} domains as unavailable in ${path5.relative(rootDir, listFile)}`);
   }
   const exhausted = complete && !moreToCome() && !queue.length;
   if (audited === 0) {

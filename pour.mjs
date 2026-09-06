@@ -188,7 +188,7 @@ if (positional[0] === 'report') {
   // keeps its two names and reads whichever applies.
   const VALUES = {
     max: ['--max', '--count'], count: ['--count'], workers: ['--workers'], pause: ['--pause'], depth: ['--depth'],
-    viewport: ['--viewport'], load: ['--load'], timeout: ['--timeout'], port: ['--port'], out: ['--out'], report: ['--report'], month: ['--month'],
+    viewport: ['--viewport'], load: ['--load'], timeout: ['--timeout'], port: ['--port'], out: ['--out'], report: ['--report'],
   };
   const SWITCHES = { 'same-host': '--same-host', fresh: '--fresh', recheck: '--recheck', render: '--render', 'no-open': '--no-open', yes: '--yes' };
   const runnerArgs = [target];
