@@ -23,6 +23,16 @@
 //   pour mcp                       # serve the audit, the focus order and the
 //                                  # simulation screenshots to an AI agent as
 //                                  # tools (MCP over stdio; see mcp.mjs)
+//   pour report yoursite.com       # every internal page of a site (or the
+//                                  # home page of every domain in a list
+//                                  # file), audited with a progress screen
+//                                  # and a standalone HTML report at the end
+//                                  # (the report runner, scripts/report)
+//   pour check src/                # the editor's static lane over files: every
+//                                  # finding with file, line and column, as
+//                                  # text, Markdown, GitHub annotations or
+//                                  # SARIF for code scanning (see check.mjs)
+//   pour <url> --format markdown   # the audit as a pull-request comment
 // Dual-home file: this script is the source of truth in the monorepo
 // (scripts/cli/) AND ships verbatim in the published pour-cli package via
 // `npm run sync:cli`, together with lib.mjs (the browser and engine plumbing
@@ -36,6 +46,7 @@
 //               browser download on install).
 // Both paths are resolved at runtime in lib.mjs; keep changes working in both.
 import { existsSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +55,7 @@ import {
   loadPuppeteer, launchBrowser, openPage, isChallenge, scrollPage, runAudit, applyFilter, sortViolations, toSc,
   IMPACT_ORDER, sleep,
 } from './lib.mjs';
+import { makePaint, findingsFromResults, markdownReport } from './report.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -64,6 +76,8 @@ for (let i = 0; i < argv.length; i++) {
 const usage = `pour — audit a URL against WCAG 2.2 with the pour engine
 
 Usage: pour <url> [options]
+       pour report <url | list.csv> [options]
+       pour check <files, folders or globs> [options]
        pour mcp [--browser <path>]
 
 Options:
@@ -76,6 +90,10 @@ Options:
   --exclude <sel>      CSS selector excluded from every rule
   --fail-on <what>     violations (default) | incomplete | none
   --max-nodes <n>      element details shown per rule (default 5, 0 = all)
+  --format <what>      terminal (default) | json | markdown (a pull-request
+                       comment); pour check adds github (annotations on the
+                       changed lines of a pull request) and sarif (GitHub
+                       code scanning, and any SARIF viewer)
   --level <detail>     quiet (the totals line only) | rules (one line per
                        rule, no elements) | max (default: everything)
   --filter <name>      screenshot the page through a vision/sensory simulation
@@ -88,6 +106,30 @@ Options:
                        Chromium in the monorepo, system Chrome when installed
                        from npm; PUPPETEER_EXECUTABLE_PATH works too)
   --headful            run the browser with a visible window
+
+  pour report <target> the report runner: every internal page of a site,
+                       breadth first from the address given, or the home
+                       page of every domain in a list file, audited with a
+                       live progress screen in the browser and a standalone
+                       HTML report at the end. Ctrl+C stops cleanly; the
+                       same command resumes. Options: --max <n> pages
+                       (default 5000), --workers <n> (4 for a site, 8 for a
+                       list), --pause <ms> between pages per worker,
+                       --depth <n>, --same-host, --viewport WxH, --load
+                       <ms> to let a page load (default 10000), --timeout
+                       <ms> for the whole page (default 20000), --report
+                       <file.html> where to save the finished report, --out
+                       <dir> where the run itself lives (default
+                       reports/audit in the monorepo), --no-open, --port
+                       <n>, --fresh, --recheck, --render
+
+  pour check <paths>   the editor's static lane from the terminal, no
+                       browser: HTML, JSX, TSX, Vue, Svelte, Angular, Liquid
+                       and Nunjucks files, every finding with its file, line
+                       and column. Values from code and script-built markup
+                       are left unjudged and counted. --bp, --fail-on,
+                       --level, --max-nodes and --format apply; --no-css
+                       skips reading linked local stylesheets
 
   pour mcp             serve pour's browser tools to an AI agent over the
                        Model Context Protocol on stdio: pour_audit,
@@ -132,250 +174,286 @@ if (positional[0] === 'mcp') {
   process.exit(0);
 }
 
-// `--filter list` (or a bare/unknown --filter, which prints the same list)
-// is a listing command and needs no URL.
-const filterListing = flags.has('filter')
-  && (flags.get('filter') === true || String(flags.get('filter')).toLowerCase() === 'list');
-
-if (!positional.length && !filterListing) fail('a URL is required\n\n' + usage);
-if (positional.length > 1) fail(`one URL at a time (got ${positional.length})`);
-
-let url = positional[0];
-let schemeless = false;
-if (url) {
-  // A scheme-less URL gets https first, like a browser address bar — and like
-  // the address bar, a TLS failure later falls back to http (shared hosts
-  // often serve a real site on 80 behind a wrong-name cert on 443).
-  try { ({ url, schemeless } = normaliseUrl(url)); } catch (error) { fail(error.message); }
-}
-
-let viewport;
-try { viewport = parseViewport(flags.get('viewport')); } catch (error) { fail(`--${error.message}`); }
-
-const failOn = String(flags.get('fail-on') ?? 'violations');
-if (!['violations', 'incomplete', 'none'].includes(failOn)) fail(`--fail-on expects violations | incomplete | none, got "${failOn}"`);
-
-const settleMs = Number(flags.get('wait') ?? 0);
-const timeoutMs = Number(flags.get('timeout') ?? 30000);
-const maxNodes = Number(flags.get('max-nodes') ?? 5);
-if ([settleMs, timeoutMs, maxNodes].some(Number.isNaN)) fail('--wait, --timeout and --max-nodes expect numbers');
-const level = String(flags.get('level') ?? 'max');
-if (!['quiet', 'rules', 'max'].includes(level)) fail(`--level expects quiet | rules | max, got "${level}"`);
-const tags = flags.has('bp') ? [...WCAG_TAGS, 'best-practice'] : WCAG_TAGS;
-const asJson = flags.has('json');
-
-// Screenshot mode: filters and audits are exclusive MODES, mirroring the
-// extension — some simulations mutate page styles or text, so auditing a
-// filtered page would audit the simulation, not the site.
-const shotMode = flags.has('filter') || flags.has('shot');
-
-// ------------------------------------------------------------------- output
-const tty = process.stdout.isTTY && !asJson;
-const color = (code, text) => (tty ? `\u001b[${code}m${text}\u001b[0m` : text);
-const bold = (t) => color(1, t);
-const dim = (t) => color(2, t);
-// The severity palette is the extension's own (--sev-*-vivid in
-// src/ui/styles/tokens.css): heat on the top two severities only, neutrals
-// below, review in blue. Truecolor terminals get the exact values; others
-// the nearest ANSI. Moderate is the terminal's default foreground, which is
-// what the extension's moderate resolves to in each of its themes.
-const truecolor = /truecolor|24bit/i.test(process.env.COLORTERM ?? '');
-const rgb = (r, g, b, fallback) => (truecolor ? `38;2;${r};${g};${b}` : fallback);
-const IMPACT_PAINT = {
-  critical: (t) => color(`1;${rgb(255, 82, 51, 91)}`, t),
-  serious: (t) => color(rgb(245, 197, 24, 33), t),
-  moderate: (t) => t,
-  minor: (t) => color(rgb(138, 143, 152, 90), t),
-};
-const reviewMark = (t) => color(rgb(96, 165, 250, 94), t);
-const paintImpact = (id, text = id) => (IMPACT_PAINT[id] ?? dim)(text);
-
-const progress = (text) => {
-  if (!process.stderr.isTTY || asJson) return;
-  process.stderr.write(`\r\u001b[2K${text}`);
-};
-const progressDone = () => {
-  if (process.stderr.isTTY && !asJson) process.stderr.write('\r\u001b[2K');
-};
-
-// -------------------------------------------------------------------- audit
-// Engine: prebuilt bundle in the published package, fresh esbuild in the
-// monorepo (so the CLI always audits with the engine as it is on disk).
-let engineSource;
-if (!shotMode) {
-  if (!existsSync(path.join(scriptDir, 'engine.iife.js'))) progress('bundling engine…');
-  engineSource = await loadEngineSource(scriptDir);
-}
-
-// Filters ride the same dual-home logic: prebuilt filters.iife.js in the
-// package, a fresh bundle over src/filters in the monorepo. One bundle
-// serves twice — evaluated here in Node for name validation and --filter
-// list, injected into the page to actually apply the simulation.
-let filtersSource = null;
-let filterName = null;
-let filterIsSensory = false;
-if (flags.has('filter')) {
-  filtersSource = await loadFiltersSource(scriptDir);
-  const filters = listFilters(filtersSource);
-  const wanted = flags.get('filter');
-  const resolved = wanted === true ? null : resolveFilter(filters, wanted);
-  if (!resolved) {
-    const listing = wanted === true || String(wanted).toLowerCase() === 'list';
-    if (!listing) console.error(`pour: unknown filter "${wanted}"\n`);
-    console.log('vision filters:');
-    for (const f of filters.vision) console.log(`  ${f.name.padEnd(26)} ${dim(f.label)}`);
-    console.log('\nsensory filters:');
-    for (const f of filters.sensory) console.log(`  ${f.name.padEnd(26)} ${dim(f.label)}`);
-    process.exit(listing ? 0 : 2);
+// `pour report`: the report runner, a child process so its progress
+// screen, Ctrl+C handling and resume work exactly as they do under npm.
+// The runner lives beside the command in the monorepo; the package will
+// carry it once it is bundled, until then this says so plainly.
+if (positional[0] === 'report') {
+  const runner = [path.join(scriptDir, 'report-runner.mjs'), path.join(scriptDir, '..', 'report', 'run.mjs')].find(existsSync);
+  if (!runner) fail('pour report needs the report runner, which this build does not carry');
+  const target = positional[1];
+  if (!target) fail(`pour report needs a URL or a list file\n\n${usage}`);
+  if (positional.length > 2) fail(`pour report takes one target (got ${positional.length - 1}); put the flags after it`);
+  // --max caps a site's crawl and a list's audited count alike; the runner
+  // keeps its two names and reads whichever applies.
+  const VALUES = {
+    max: ['--max', '--count'], count: ['--count'], workers: ['--workers'], pause: ['--pause'], depth: ['--depth'],
+    viewport: ['--viewport'], load: ['--load'], timeout: ['--timeout'], port: ['--port'], out: ['--out'], report: ['--report'], month: ['--month'],
+  };
+  const SWITCHES = { 'same-host': '--same-host', fresh: '--fresh', recheck: '--recheck', render: '--render', 'no-open': '--no-open', yes: '--yes' };
+  const runnerArgs = [target];
+  for (const [name, value] of flags) {
+    if (VALUES[name]) { for (const f of VALUES[name]) runnerArgs.push(f, String(value)); }
+    else if (SWITCHES[name]) { runnerArgs.push(SWITCHES[name]); if (typeof value === 'string') runnerArgs.push(value); }
+    else fail(`pour report does not take --${name}`);
   }
-  ({ name: filterName, isSensory: filterIsSensory } = resolved);
-}
-
-let puppeteer;
-let browser;
-try {
-  puppeteer = await loadPuppeteer();
-  browser = await launchBrowser(puppeteer, {
-    headless: !flags.has('headful'),
-    insecure: flags.has('insecure'),
-    executablePath: flags.get('browser') ? String(flags.get('browser')) : undefined,
-  });
-} catch (error) {
-  fail(error.message);
-}
-
-let results;
-let shotPath;
-try {
-  progress(`loading ${url}…`);
-  let page;
+  // Ctrl+C reaches the runner directly (same process group); the command
+  // waits for it to stop cleanly and carries its exit code.
+  process.on('SIGINT', () => {});
+  const child = spawn(process.execPath, [runner, ...runnerArgs], { stdio: 'inherit' });
+  process.exitCode = await new Promise((resolve) => child.on('exit', (code) => resolve(code ?? 1)));
+} else if (positional[0] === 'check') {
+// `pour check`: files, not a URL. The static lane runs in-process and
+// returns the exit code; every error is a usage error here.
+  const { runCheck } = await import('./check.mjs');
   try {
-    ({ page, url } = await openPage(browser, { url, viewport, timeoutMs, settleMs, schemeless, onNote: progress }));
+    process.exitCode = await runCheck({
+      scriptDir, inputs: positional.slice(1), flags, version: packageVersion()?.split(' ')[1] ?? 'dev',
+    });
   } catch (error) {
-    progressDone();
+    fail(error.message);
+  }
+} else {
+  // `--filter list` (or a bare/unknown --filter, which prints the same list)
+  // is a listing command and needs no URL.
+  const filterListing = flags.has('filter')
+    && (flags.get('filter') === true || String(flags.get('filter')).toLowerCase() === 'list');
+
+  if (!positional.length && !filterListing) fail('a URL is required\n\n' + usage);
+  if (positional.length > 1) fail(`one URL at a time (got ${positional.length})`);
+
+  let url = positional[0];
+  let schemeless = false;
+  if (url) {
+    // A scheme-less URL gets https first, like a browser address bar — and like
+    // the address bar, a TLS failure later falls back to http (shared hosts
+    // often serve a real site on 80 behind a wrong-name cert on 443).
+    try { ({ url, schemeless } = normaliseUrl(url)); } catch (error) { fail(error.message); }
+  }
+
+  let viewport;
+  try { viewport = parseViewport(flags.get('viewport')); } catch (error) { fail(`--${error.message}`); }
+
+  const failOn = String(flags.get('fail-on') ?? 'violations');
+  if (!['violations', 'incomplete', 'none'].includes(failOn)) fail(`--fail-on expects violations | incomplete | none, got "${failOn}"`);
+
+  const settleMs = Number(flags.get('wait') ?? 0);
+  const timeoutMs = Number(flags.get('timeout') ?? 30000);
+  const maxNodes = Number(flags.get('max-nodes') ?? 5);
+  if ([settleMs, timeoutMs, maxNodes].some(Number.isNaN)) fail('--wait, --timeout and --max-nodes expect numbers');
+  const level = String(flags.get('level') ?? 'max');
+  if (!['quiet', 'rules', 'max'].includes(level)) fail(`--level expects quiet | rules | max, got "${level}"`);
+  const tags = flags.has('bp') ? [...WCAG_TAGS, 'best-practice'] : WCAG_TAGS;
+  const format = String(flags.get('format') ?? (flags.has('json') ? 'json' : 'terminal'));
+  if (!['terminal', 'json', 'markdown'].includes(format)) fail(`--format expects terminal | json | markdown for a URL audit, got "${format}"`);
+  const asJson = format === 'json';
+
+  // Screenshot mode: filters and audits are exclusive MODES, mirroring the
+  // extension — some simulations mutate page styles or text, so auditing a
+  // filtered page would audit the simulation, not the site.
+  const shotMode = flags.has('filter') || flags.has('shot');
+
+  // ------------------------------------------------------------------- output
+  const tty = process.stdout.isTTY && !asJson;
+  const { color, bold, dim, paintImpact, reviewMark } = makePaint(tty);
+
+  const progress = (text) => {
+    if (!process.stderr.isTTY || asJson) return;
+    process.stderr.write(`\r\u001b[2K${text}`);
+  };
+  const progressDone = () => {
+    if (process.stderr.isTTY && !asJson) process.stderr.write('\r\u001b[2K');
+  };
+
+  // -------------------------------------------------------------------- audit
+  // Engine: prebuilt bundle in the published package, fresh esbuild in the
+  // monorepo (so the CLI always audits with the engine as it is on disk).
+  let engineSource;
+  if (!shotMode) {
+    if (!existsSync(path.join(scriptDir, 'engine.iife.js'))) progress('bundling engine…');
+    engineSource = await loadEngineSource(scriptDir);
+  }
+
+  // Filters ride the same dual-home logic: prebuilt filters.iife.js in the
+  // package, a fresh bundle over src/filters in the monorepo. One bundle
+  // serves twice — evaluated here in Node for name validation and --filter
+  // list, injected into the page to actually apply the simulation.
+  let filtersSource = null;
+  let filterName = null;
+  let filterIsSensory = false;
+  if (flags.has('filter')) {
+    filtersSource = await loadFiltersSource(scriptDir);
+    const filters = listFilters(filtersSource);
+    const wanted = flags.get('filter');
+    const resolved = wanted === true ? null : resolveFilter(filters, wanted);
+    if (!resolved) {
+      const listing = wanted === true || String(wanted).toLowerCase() === 'list';
+      if (!listing) console.error(`pour: unknown filter "${wanted}"\n`);
+      console.log('vision filters:');
+      for (const f of filters.vision) console.log(`  ${f.name.padEnd(26)} ${dim(f.label)}`);
+      console.log('\nsensory filters:');
+      for (const f of filters.sensory) console.log(`  ${f.name.padEnd(26)} ${dim(f.label)}`);
+      process.exit(listing ? 0 : 2);
+    }
+    ({ name: filterName, isSensory: filterIsSensory } = resolved);
+  }
+
+  let puppeteer;
+  let browser;
+  try {
+    puppeteer = await loadPuppeteer();
+    browser = await launchBrowser(puppeteer, {
+      headless: !flags.has('headful'),
+      insecure: flags.has('insecure'),
+      executablePath: flags.get('browser') ? String(flags.get('browser')) : undefined,
+    });
+  } catch (error) {
     fail(error.message);
   }
 
-  // A bot-verification interstitial (Cloudflare's "Just a moment…" and kin)
-  // is not the site: auditing it would report the challenge page's markup as
-  // the site's accessibility, in a confident 0.0s audit. Refuse rather than
-  // mislead — except in --headful, where the human completes the check in
-  // the visible window and the audit continues against the real page.
-  if (await isChallenge(page)) {
-    if (!flags.has('headful')) {
+  let results;
+  let shotPath;
+  try {
+    progress(`loading ${url}…`);
+    let page;
+    try {
+      ({ page, url } = await openPage(browser, { url, viewport, timeoutMs, settleMs, schemeless, onNote: progress }));
+    } catch (error) {
       progressDone();
-      fail(`${url} is showing a bot-verification challenge, not the site — an audit here would measure the challenge page.\nRe-run with --headful and complete the verification in the browser window; pour waits and audits the real page.`);
+      fail(error.message);
     }
-    progress('bot challenge detected — complete the verification in the browser window…');
-    const deadline = Date.now() + 120000;
-    while (await isChallenge(page)) {
-      if (Date.now() > deadline) {
+
+    // A bot-verification interstitial (Cloudflare's "Just a moment…" and kin)
+    // is not the site: auditing it would report the challenge page's markup as
+    // the site's accessibility, in a confident 0.0s audit. Refuse rather than
+    // mislead — except in --headful, where the human completes the check in
+    // the visible window and the audit continues against the real page.
+    if (await isChallenge(page)) {
+      if (!flags.has('headful')) {
         progressDone();
-        fail('the verification was not completed within 2 minutes');
+        fail(`${url} is showing a bot-verification challenge, not the site — an audit here would measure the challenge page.\nRe-run with --headful and complete the verification in the browser window; pour waits and audits the real page.`);
       }
-      await sleep(500);
-    }
-    // The cleared challenge navigates to the real page; let it arrive.
-    await sleep(1500);
-  }
-
-  if (flags.has('scroll')) {
-    progress('scrolling for lazy content…');
-    await scrollPage(page);
-  }
-
-  if (shotMode) {
-    if (filterName) {
-      progress(`applying ${filterName}…`);
-      await applyFilter(page, filtersSource, filterName, filterIsSensory);
-    }
-    const explicitShot = flags.get('shot');
-    shotPath = typeof explicitShot === 'string'
-      ? explicitShot
-      : `pour-${new URL(url).hostname}${filterName ? `-${filterName}` : ''}.png`;
-    progress('capturing…');
-    await page.screenshot({ path: shotPath, fullPage: flags.has('full') });
-  } else {
-    progress('auditing…');
-    results = await runAudit(page, engineSource, {
-      tags,
-      exclude: flags.get('exclude') ? String(flags.get('exclude')) : undefined,
-      onProgress: (done, total, rule) => progress(`auditing… ${done}/${total} ${dim(rule)}`),
-    });
-  }
-} finally {
-  await browser.close();
-}
-progressDone();
-
-// ------------------------------------------------------------------- report
-if (shotMode) {
-  console.log(`${bold('pour')} ${dim('·')} ${url}`);
-  console.log(`saved ${bold(shotPath)}${filterName ? ` ${dim(`· ${filterName}`)}` : ''} ${dim(`· ${viewport.width}x${viewport.height}${flags.has('full') ? ' · full page' : ''}`)}`);
-  process.exit(0);
-}
-
-if (asJson) {
-  console.log(JSON.stringify({ ...results, viewport }, null, 2));
-} else {
-  const totalNodes = (list) => list.reduce((n, r) => n + r.nodes.length, 0);
-  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-  const seconds = (results.durationMs / 1000).toFixed(1);
-
-  // --level quiet keeps only the totals line below, for scripts and quick
-  // checks; rules keeps the per-rule lines but drops the element details.
-  if (level !== 'quiet') {
-    console.log(`\n${bold('pour')} ${dim('·')} ${url}`);
-    console.log(dim(`engine ${results.testEngine.version} · ${viewport.width}x${viewport.height} · ${flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'} · ${seconds}s`));
-
-    const sorted = sortViolations(results.violations);
-
-    if (!sorted.length) {
-      console.log(`\n${color(32, '✓')} no violations found`);
-    } else {
-      console.log(`\n${bold(`VIOLATIONS`)} ${dim(`(${plural(sorted.length, 'rule')}, ${plural(totalNodes(sorted), 'element')})`)}`);
-      // At the rules level the lines form a table: severity, id and count
-      // are padded into columns (on the plain strings — ANSI escapes would
-      // defeat padEnd), so the eye can scan a column instead of a ragged edge.
-      const idWidth = Math.max(...sorted.map((rule) => rule.id.length));
-      const countWidth = Math.max(...sorted.map((rule) => String(rule.nodes.length).length));
-      for (const rule of sorted) {
-        const scs = [...new Set(rule.tags.map(toSc).filter(Boolean))];
-        if (level !== 'max') {
-          const count = `${String(rule.nodes.length).padStart(countWidth)} ${rule.nodes.length === 1 ? 'element ' : 'elements'}`;
-          console.log(`  ${paintImpact(rule.impact, '●')} ${paintImpact(rule.impact, rule.impact.padEnd(8))}  ${bold(rule.id.padEnd(idWidth))}  ${dim(`${count}${scs.length ? `  ${scs.join(', ')}` : ''}`.trimEnd())}`);
-          continue;
+      progress('bot challenge detected — complete the verification in the browser window…');
+      const deadline = Date.now() + 120000;
+      while (await isChallenge(page)) {
+        if (Date.now() > deadline) {
+          progressDone();
+          fail('the verification was not completed within 2 minutes');
         }
-        console.log(`\n  ${paintImpact(rule.impact, '●')} ${paintImpact(rule.impact)}  ${bold(rule.id)} ${dim(`· ${plural(rule.nodes.length, 'element')}${scs.length ? ` · ${scs.join(', ')}` : ''}`)}`);
-        console.log(`    ${rule.help}`);
-        const shown = maxNodes === 0 ? rule.nodes : rule.nodes.slice(0, maxNodes);
-        shown.forEach((node, i) => {
-          console.log(`    ${dim(`${i + 1}.`)} ${node.target[0]}`);
-          const message = (node.failureSummary || '').split('\n')[0];
-          if (message) console.log(`       ${dim(message)}`);
-        });
-        if (rule.nodes.length > shown.length) console.log(dim(`       … ${rule.nodes.length - shown.length} more (--max-nodes 0 shows all)`));
+        await sleep(500);
+      }
+      // The cleared challenge navigates to the real page; let it arrive.
+      await sleep(1500);
+    }
+
+    if (flags.has('scroll')) {
+      progress('scrolling for lazy content…');
+      await scrollPage(page);
+    }
+
+    if (shotMode) {
+      if (filterName) {
+        progress(`applying ${filterName}…`);
+        await applyFilter(page, filtersSource, filterName, filterIsSensory);
+      }
+      const explicitShot = flags.get('shot');
+      shotPath = typeof explicitShot === 'string'
+        ? explicitShot
+        : `pour-${new URL(url).hostname}${filterName ? `-${filterName}` : ''}.png`;
+      progress('capturing…');
+      await page.screenshot({ path: shotPath, fullPage: flags.has('full') });
+    } else {
+      progress('auditing…');
+      results = await runAudit(page, engineSource, {
+        tags,
+        exclude: flags.get('exclude') ? String(flags.get('exclude')) : undefined,
+        onProgress: (done, total, rule) => progress(`auditing… ${done}/${total} ${dim(rule)}`),
+      });
+    }
+  } finally {
+    await browser.close();
+  }
+  progressDone();
+
+  // ------------------------------------------------------------------- report
+  if (shotMode) {
+    console.log(`${bold('pour')} ${dim('·')} ${url}`);
+    console.log(`saved ${bold(shotPath)}${filterName ? ` ${dim(`· ${filterName}`)}` : ''} ${dim(`· ${viewport.width}x${viewport.height}${flags.has('full') ? ' · full page' : ''}`)}`);
+    process.exitCode = 0;
+  } else {
+
+  if (asJson) {
+    console.log(JSON.stringify({ ...results, viewport }, null, 2));
+  } else if (format === 'markdown') {
+    console.log(markdownReport(findingsFromResults(results, url), {
+      title: url,
+      meta: [`engine ${results.testEngine.version}`, `${viewport.width}x${viewport.height}`, flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'],
+      maxNodes,
+    }));
+  } else {
+    const totalNodes = (list) => list.reduce((n, r) => n + r.nodes.length, 0);
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    const seconds = (results.durationMs / 1000).toFixed(1);
+
+    // --level quiet keeps only the totals line below, for scripts and quick
+    // checks; rules keeps the per-rule lines but drops the element details.
+    if (level !== 'quiet') {
+      console.log(`\n${bold('pour')} ${dim('·')} ${url}`);
+      console.log(dim(`engine ${results.testEngine.version} · ${viewport.width}x${viewport.height} · ${flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'} · ${seconds}s`));
+
+      const sorted = sortViolations(results.violations);
+
+      if (!sorted.length) {
+        console.log(`\n${color(32, '✓')} no violations found`);
+      } else {
+        console.log(`\n${bold(`VIOLATIONS`)} ${dim(`(${plural(sorted.length, 'rule')}, ${plural(totalNodes(sorted), 'element')})`)}`);
+        // At the rules level the lines form a table: severity, id and count
+        // are padded into columns (on the plain strings — ANSI escapes would
+        // defeat padEnd), so the eye can scan a column instead of a ragged edge.
+        const idWidth = Math.max(...sorted.map((rule) => rule.id.length));
+        const countWidth = Math.max(...sorted.map((rule) => String(rule.nodes.length).length));
+        for (const rule of sorted) {
+          const scs = [...new Set(rule.tags.map(toSc).filter(Boolean))];
+          if (level !== 'max') {
+            const count = `${String(rule.nodes.length).padStart(countWidth)} ${rule.nodes.length === 1 ? 'element ' : 'elements'}`;
+            console.log(`  ${paintImpact(rule.impact, '●')} ${paintImpact(rule.impact, rule.impact.padEnd(8))}  ${bold(rule.id.padEnd(idWidth))}  ${dim(`${count}${scs.length ? `  ${scs.join(', ')}` : ''}`.trimEnd())}`);
+            continue;
+          }
+          console.log(`\n  ${paintImpact(rule.impact, '●')} ${paintImpact(rule.impact)}  ${bold(rule.id)} ${dim(`· ${plural(rule.nodes.length, 'element')}${scs.length ? ` · ${scs.join(', ')}` : ''}`)}`);
+          console.log(`    ${rule.help}`);
+          const shown = maxNodes === 0 ? rule.nodes : rule.nodes.slice(0, maxNodes);
+          shown.forEach((node, i) => {
+            console.log(`    ${dim(`${i + 1}.`)} ${node.target[0]}`);
+            const message = (node.failureSummary || '').split('\n')[0];
+            if (message) console.log(`       ${dim(message)}`);
+          });
+          if (rule.nodes.length > shown.length) console.log(dim(`       … ${rule.nodes.length - shown.length} more (--max-nodes 0 shows all)`));
+        }
+      }
+
+      if (results.incomplete.length) {
+        console.log(`\n${bold('NEEDS REVIEW')} ${dim(`(${plural(results.incomplete.length, 'rule')}, ${plural(totalNodes(results.incomplete), 'element')} — the engine abstains rather than guess)`)}`);
+        const reviewWidth = Math.max(...results.incomplete.map((rule) => rule.id.length));
+        for (const rule of results.incomplete) {
+          console.log(level !== 'max'
+            ? `  ${reviewMark('◐')} ${rule.id.padEnd(reviewWidth)}  ${dim(plural(rule.nodes.length, 'element'))}`
+            : `  ${reviewMark('◐')} ${rule.id} ${dim(`· ${plural(rule.nodes.length, 'element')}`)}`);
+        }
       }
     }
 
-    if (results.incomplete.length) {
-      console.log(`\n${bold('NEEDS REVIEW')} ${dim(`(${plural(results.incomplete.length, 'rule')}, ${plural(totalNodes(results.incomplete), 'element')} — the engine abstains rather than guess)`)}`);
-      const reviewWidth = Math.max(...results.incomplete.map((rule) => rule.id.length));
-      for (const rule of results.incomplete) {
-        console.log(level !== 'max'
-          ? `  ${reviewMark('◐')} ${rule.id.padEnd(reviewWidth)}  ${dim(plural(rule.nodes.length, 'element'))}`
-          : `  ${reviewMark('◐')} ${rule.id} ${dim(`· ${plural(rule.nodes.length, 'element')}`)}`);
-      }
-    }
+    const counts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
+    for (const rule of results.violations) counts[rule.impact] = (counts[rule.impact] ?? 0) + rule.nodes.length;
+    const summary = IMPACT_ORDER.filter((id) => counts[id]).map((id) => paintImpact(id, `${counts[id]} ${id}`)).join(dim(' · '));
+    const totals = `${summary || color(32, 'clean')}${results.incomplete.length ? dim(` · ${totalNodes(results.incomplete)} to review`) : ''}`;
+    console.log(level === 'quiet' ? totals : `\n${totals}\n`);
   }
 
-  const counts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
-  for (const rule of results.violations) counts[rule.impact] = (counts[rule.impact] ?? 0) + rule.nodes.length;
-  const summary = IMPACT_ORDER.filter((id) => counts[id]).map((id) => paintImpact(id, `${counts[id]} ${id}`)).join(dim(' · '));
-  const totals = `${summary || color(32, 'clean')}${results.incomplete.length ? dim(` · ${totalNodes(results.incomplete)} to review`) : ''}`;
-  console.log(level === 'quiet' ? totals : `\n${totals}\n`);
+  const failed = (failOn === 'violations' && results.violations.length > 0)
+    || (failOn === 'incomplete' && (results.violations.length > 0 || results.incomplete.length > 0));
+  // Not process.exit(): a piped stdout is asynchronous on macOS, and exiting
+  // right after a large --json print truncated it mid-document. The browser
+  // is closed, so the loop drains and the process ends on its own.
+  process.exitCode = failed ? 1 : 0;
+  }
 }
-
-const failed = (failOn === 'violations' && results.violations.length > 0)
-  || (failOn === 'incomplete' && (results.violations.length > 0 || results.incomplete.length > 0));
-process.exit(failed ? 1 : 0);

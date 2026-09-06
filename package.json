@@ -1,7 +1,7 @@
 {
   "name": "pour-cli",
-  "version": "0.1.39",
-  "description": "Audit any URL against WCAG 2.2 from the terminal with the pour engine. Headless Chrome, structured findings, CI-friendly exit codes, and an MCP server that gives AI agents the same tools.",
+  "version": "0.2.0",
+  "description": "Audit any URL against WCAG 2.2 from the terminal with the pour engine. Headless Chrome, structured findings, CI-friendly exit codes, a static check over HTML and template files with SARIF and GitHub annotations, a site-wide report runner, and an MCP server that gives AI agents the same tools.",
   "type": "module",
   "bin": {
     "pour": "./pour.mjs"
@@ -10,6 +10,11 @@
     "pour.mjs",
     "lib.mjs",
     "mcp.mjs",
+    "report.mjs",
+    "check.mjs",
+    "check-lane.mjs",
+    "report-runner.mjs",
+    "report-screen.mjs",
     "engine.iife.js",
     "filters.iife.js"
   ],
@@ -29,6 +34,8 @@
     "cli",
     "ci",
     "testing",
+    "sarif",
+    "lint",
     "mcp",
     "agents"
   ],
@@ -36,6 +43,8 @@
     "node": ">=18"
   },
   "dependencies": {
-    "puppeteer-core": "^25.5.0"
+    "puppeteer-core": "^25.5.0",
+    "jsdom": "^30.0.1",
+    "@babel/parser": "^8.0.4"
   }
 }

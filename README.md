@@ -27,8 +27,15 @@ binary to use something else.
 
 ```
 pour <url> [options]
+pour check <files, folders or globs> [options]
+pour report <url | list.csv> [options]
+pour mcp
 
   --json               print the full engine results as JSON
+  --format <what>      terminal (default) | json | markdown (a pull-request
+                       comment); pour check adds github (annotations on the
+                       changed lines of a pull request) and sarif (GitHub
+                       code scanning, and any SARIF viewer)
   --viewport WxH       viewport (default 1440x900); a bare width implies x900
   --scroll             scroll through the page before auditing (lazy content)
   --wait <ms>          extra settle delay after load (default 0)
@@ -48,6 +55,10 @@ pour <url> [options]
   --browser <path>     Chrome/Chromium binary to drive
   --headful            run the browser with a visible window
 
+pour check <paths>     the editor's static lane from the terminal, no
+                       browser (see below)
+pour report <target>   every page of a site, with a progress screen and a
+                       standalone HTML report (see below)
 pour mcp               serve pour's browser tools to an AI agent (see below)
 ```
 
@@ -81,6 +92,45 @@ the report header echoes it, and comparing two runs only makes sense at the
 same width. `--scroll` walks the page first so lazy-loaded content is in
 the DOM; that changes the numbers too, by design.
 
+## Checking files
+
+`pour check` reads HTML, JSX, TSX, Vue, Svelte, Angular, Liquid and Nunjucks
+files and runs the engine's markup rules over them with no browser, the same
+lane the pour extension for VS Code runs as you type. Every finding comes
+with its file, line and column.
+
+```sh
+pour check src/                      # every file the lane can read, under src
+pour check "src/**/*.html" --level rules
+pour check src --format sarif > pour.sarif
+```
+
+Values that come from code (`alt={name}`), script-built markup and anything
+a template tag leaves unknowable are left unjudged and counted rather than
+guessed. Colour contrast, target size, focus and motion need the page in a
+browser, so those stay with `pour <url>`. `--bp`, `--fail-on`, `--level`,
+`--max-nodes` and `--format` apply; `--no-css` skips reading the local
+stylesheets a page links.
+
+## Reports over many pages
+
+`pour report` crawls a site breadth first from the address given (or audits
+the home page of every domain in a list file), with a live progress screen
+in the browser and one standalone HTML report at the end. Ctrl+C stops
+cleanly; the same command resumes.
+
+```sh
+pour report yoursite.com --max 200 --report reports/yoursite.html
+```
+
+`--max <n>` caps the pages, `--workers <n>` the parallel pages (4 for a
+site, 8 for a list), `--pause <ms>` the gap between pages per worker;
+`--depth <n>`, `--same-host`, `--viewport WxH`, `--load <ms>` and
+`--timeout <ms>` shape the crawl. `--report <file.html>` says where the
+finished report goes; `--out <dir>` where the run itself lives (default
+`pour-reports` in the working directory). `--no-open`, `--port <n>`,
+`--fresh`, `--recheck` and `--render` behave as their names say.
+
 ## CI
 
 ```yaml
@@ -90,6 +140,25 @@ the DOM; that changes the numbers too, by design.
 `--level quiet` keeps the log to the one totals line; the exit code still
 carries the verdict. Drop it (or use `--level rules`) when you want the
 findings in the CI log too.
+
+Findings can land in the pull request itself. Annotations on the changed
+lines work on any repository:
+
+```yaml
+- run: npx pour-cli check src --format github
+```
+
+SARIF goes to GitHub code scanning, which tracks each alert across commits
+and closes it when the finding goes:
+
+```yaml
+- run: npx pour-cli check src --format sarif > pour.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with: { sarif_file: pour.sarif }
+```
+
+And `--format markdown`, on `pour <url>` or `pour check`, writes a comment
+for `gh pr comment --body-file`.
 
 ## AI agents
 
