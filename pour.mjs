@@ -20,24 +20,32 @@
 //   pour <url> --exclude ".ads"    # CSS selector to leave out of every rule
 //   pour <url> --fail-on none      # violations (default) | incomplete | none
 //   pour <url> --headful           # watch the browser work
+//   pour mcp                       # serve the audit, the focus order and the
+//                                  # simulation screenshots to an AI agent as
+//                                  # tools (MCP over stdio; see mcp.mjs)
 // Dual-home file: this script is the source of truth in the monorepo
 // (scripts/cli/) AND ships verbatim in the published pour-cli package via
-// `npm run sync:cli`. The two homes differ in what sits around it:
+// `npm run sync:cli`, together with lib.mjs (the browser and engine plumbing
+// it shares with the agent server) and mcp.mjs. The two homes differ in
+// what sits around them:
 //   monorepo  — no prebuilt bundle: the engine is built fresh from
 //               src/engine with esbuild, and full puppeteer (a devDep)
 //               brings its own Chromium.
 //   package   — engine.iife.js is prebuilt next to this file at sync time,
 //               and puppeteer-core drives the system Chrome (no 170MB
 //               browser download on install).
-// Both paths are resolved at runtime below; keep changes working in both.
+// Both paths are resolved at runtime in lib.mjs; keep changes working in both.
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import {
+  WCAG_TAGS, loadEngineSource, loadFiltersSource, listFilters, resolveFilter, normaliseUrl, parseViewport,
+  loadPuppeteer, launchBrowser, openPage, isChallenge, scrollPage, runAudit, applyFilter, sortViolations, toSc,
+  IMPACT_ORDER, sleep,
+} from './lib.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-
-const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22a', 'wcag22aa'];
 
 // ---------------------------------------------------------------- arguments
 const argv = process.argv.slice(2);
@@ -56,6 +64,7 @@ for (let i = 0; i < argv.length; i++) {
 const usage = `pour — audit a URL against WCAG 2.2 with the pour engine
 
 Usage: pour <url> [options]
+       pour mcp [--browser <path>]
 
 Options:
   --json               print the full engine results as JSON
@@ -80,6 +89,12 @@ Options:
                        from npm; PUPPETEER_EXECUTABLE_PATH works too)
   --headful            run the browser with a visible window
 
+  pour mcp             serve pour's browser tools to an AI agent over the
+                       Model Context Protocol on stdio: pour_audit,
+                       pour_focus_order and pour_screenshot. Add it to any
+                       MCP client as the command "pour" with the argument
+                       "mcp"; the VS Code extension adds it by itself.
+
 Exit codes: 0 clean, 1 findings (per --fail-on), 2 error`;
 
 if (flags.has('help') || (!positional.length && !argv.length)) {
@@ -87,21 +102,35 @@ if (flags.has('help') || (!positional.length && !argv.length)) {
   process.exit(flags.has('help') ? 0 : 2);
 }
 
-if (flags.has('version')) {
-  // Published package: its own package.json sits next to this script.
-  // Monorepo: the CLI has no version of its own — the engine is the version
-  // that matters, and every report header prints it.
+// Published package: its own package.json sits next to this script.
+// Monorepo: the CLI has no version of its own — the engine is the version
+// that matters, and every report header prints it.
+const packageVersion = () => {
   const pkgPath = path.join(scriptDir, 'package.json');
-  if (existsSync(pkgPath)) {
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-    console.log(`${pkg.name} ${pkg.version}`);
-  } else {
-    console.log('pour-cli (monorepo dev build)');
-  }
+  if (!existsSync(pkgPath)) return null;
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  return `${pkg.name} ${pkg.version}`;
+};
+
+if (flags.has('version')) {
+  console.log(packageVersion() ?? 'pour-cli (monorepo dev build)');
   process.exit(0);
 }
 
 const fail = (message) => { console.error(`pour: ${message}`); process.exit(2); };
+
+// `pour mcp`: the agent server owns the process until its client closes
+// stdin. Everything below is the one-shot command.
+if (positional[0] === 'mcp') {
+  if (positional.length > 1) fail('pour mcp takes no URL: the agent passes one to each tool');
+  const { serve } = await import('./mcp.mjs');
+  await serve({
+    scriptDir,
+    version: packageVersion()?.split(' ')[1] ?? 'dev',
+    executablePath: flags.get('browser') ? String(flags.get('browser')) : undefined,
+  });
+  process.exit(0);
+}
 
 // `--filter list` (or a bare/unknown --filter, which prints the same list)
 // is a listing command and needs no URL.
@@ -117,14 +146,11 @@ if (url) {
   // A scheme-less URL gets https first, like a browser address bar — and like
   // the address bar, a TLS failure later falls back to http (shared hosts
   // often serve a real site on 80 behind a wrong-name cert on 443).
-  schemeless = !/^[a-z][a-z0-9+.-]*:/i.test(url);
-  if (schemeless) url = `https://${url}`;
-  try { new URL(url); } catch { fail(`not a valid URL: ${positional[0]}`); }
+  try { ({ url, schemeless } = normaliseUrl(url)); } catch (error) { fail(error.message); }
 }
 
-const viewportMatch = /^(\d{3,5})(?:\s*[x×]\s*(\d{3,5}))?$/i.exec(String(flags.get('viewport') ?? '1440x900').trim());
-if (!viewportMatch) fail(`--viewport expects WxH (e.g. 1440x900), got "${flags.get('viewport')}"`);
-const viewport = { width: Number(viewportMatch[1]), height: Number(viewportMatch[2] ?? 900) };
+let viewport;
+try { viewport = parseViewport(flags.get('viewport')); } catch (error) { fail(`--${error.message}`); }
 
 const failOn = String(flags.get('fail-on') ?? 'violations');
 if (!['violations', 'incomplete', 'none'].includes(failOn)) fail(`--fail-on expects violations | incomplete | none, got "${failOn}"`);
@@ -155,21 +181,14 @@ const dim = (t) => color(2, t);
 // what the extension's moderate resolves to in each of its themes.
 const truecolor = /truecolor|24bit/i.test(process.env.COLORTERM ?? '');
 const rgb = (r, g, b, fallback) => (truecolor ? `38;2;${r};${g};${b}` : fallback);
-const IMPACTS = [
-  { id: 'critical', paint: (t) => color(`1;${rgb(255, 82, 51, 91)}`, t) },
-  { id: 'serious', paint: (t) => color(rgb(245, 197, 24, 33), t) },
-  { id: 'moderate', paint: (t) => t },
-  { id: 'minor', paint: (t) => color(rgb(138, 143, 152, 90), t) },
-];
-const reviewMark = (t) => color(rgb(96, 165, 250, 94), t);
-const impactRank = new Map(IMPACTS.map((impact, i) => [impact.id, i]));
-const paintImpact = (id, text = id) => (IMPACTS.find((i) => i.id === id)?.paint ?? dim)(text);
-
-// wcag143 → 1.4.3, for the success-criteria note on each rule line.
-const toSc = (tag) => {
-  const m = /^wcag(\d{3,4})$/.exec(tag);
-  return m ? `${m[1][0]}.${m[1][1]}.${m[1].slice(2)}` : null;
+const IMPACT_PAINT = {
+  critical: (t) => color(`1;${rgb(255, 82, 51, 91)}`, t),
+  serious: (t) => color(rgb(245, 197, 24, 33), t),
+  moderate: (t) => t,
+  minor: (t) => color(rgb(138, 143, 152, 90), t),
 };
+const reviewMark = (t) => color(rgb(96, 165, 250, 94), t);
+const paintImpact = (id, text = id) => (IMPACT_PAINT[id] ?? dim)(text);
 
 const progress = (text) => {
   if (!process.stderr.isTTY || asJson) return;
@@ -184,21 +203,8 @@ const progressDone = () => {
 // monorepo (so the CLI always audits with the engine as it is on disk).
 let engineSource;
 if (!shotMode) {
-  const prebuilt = path.join(scriptDir, 'engine.iife.js');
-  if (existsSync(prebuilt)) {
-    engineSource = readFileSync(prebuilt, 'utf8');
-  } else {
-    progress('bundling engine…');
-    const esbuild = await import('esbuild');
-    engineSource = esbuild.buildSync({
-      entryPoints: [path.resolve(scriptDir, '..', '..', 'src', 'engine', 'index.js')],
-      bundle: true,
-      format: 'iife',
-      globalName: 'PourEngine',
-      minify: true,
-      write: false,
-    }).outputFiles[0].text;
-  }
+  if (!existsSync(path.join(scriptDir, 'engine.iife.js'))) progress('bundling engine…');
+  engineSource = await loadEngineSource(scriptDir);
 }
 
 // Filters ride the same dual-home logic: prebuilt filters.iife.js in the
@@ -209,158 +215,79 @@ let filtersSource = null;
 let filterName = null;
 let filterIsSensory = false;
 if (flags.has('filter')) {
-  const prebuiltFilters = path.join(scriptDir, 'filters.iife.js');
-  if (existsSync(prebuiltFilters)) {
-    filtersSource = readFileSync(prebuiltFilters, 'utf8');
-  } else {
-    const esbuild = await import('esbuild');
-    filtersSource = esbuild.buildSync({
-      stdin: {
-        contents: "export { createFilterApplier } from './apply.js';\nexport { CSS_FILTERS, SENSORY_FILTERS, MODE_LABELS } from './catalog.js';",
-        resolveDir: path.resolve(scriptDir, '..', '..', 'src', 'filters'),
-        loader: 'js',
-      },
-      bundle: true,
-      format: 'iife',
-      globalName: 'PourFilters',
-      minify: true,
-      write: false,
-      loader: { '.css': 'text' },
-    }).outputFiles[0].text;
-  }
-  (0, eval)(filtersSource);
-  const { CSS_FILTERS, SENSORY_FILTERS, MODE_LABELS } = globalThis.PourFilters;
-  const visionNames = Object.keys(CSS_FILTERS).filter((n) => n !== 'none');
-  const sensoryNames = Object.keys(SENSORY_FILTERS).filter((n) => n !== 'none');
+  filtersSource = await loadFiltersSource(scriptDir);
+  const filters = listFilters(filtersSource);
   const wanted = flags.get('filter');
-  const norm = String(wanted).toLowerCase();
-  filterName = visionNames.find((n) => n.toLowerCase() === norm)
-    ?? sensoryNames.find((n) => n.toLowerCase() === norm)
-    ?? null;
-  filterIsSensory = filterName !== null && !visionNames.includes(filterName);
-  if (!filterName) {
-    const listing = wanted === true || norm === 'list';
+  const resolved = wanted === true ? null : resolveFilter(filters, wanted);
+  if (!resolved) {
+    const listing = wanted === true || String(wanted).toLowerCase() === 'list';
     if (!listing) console.error(`pour: unknown filter "${wanted}"\n`);
     console.log('vision filters:');
-    for (const n of visionNames) console.log(`  ${n.padEnd(26)} ${dim(MODE_LABELS[n] ?? '')}`);
+    for (const f of filters.vision) console.log(`  ${f.name.padEnd(26)} ${dim(f.label)}`);
     console.log('\nsensory filters:');
-    for (const n of sensoryNames) console.log(`  ${n.padEnd(26)} ${dim(MODE_LABELS[n] ?? SENSORY_FILTERS[n]?.label ?? '')}`);
+    for (const f of filters.sensory) console.log(`  ${f.name.padEnd(26)} ${dim(f.label)}`);
     process.exit(listing ? 0 : 2);
   }
+  ({ name: filterName, isSensory: filterIsSensory } = resolved);
 }
 
-// Browser: full puppeteer where present (monorepo devDep, brings its own
-// Chromium); otherwise puppeteer-core driving an installed Chrome.
 let puppeteer;
-try { puppeteer = (await import('puppeteer')).default; }
-catch {
-  try { puppeteer = (await import('puppeteer-core')).default; }
-  catch { fail('neither puppeteer nor puppeteer-core is installed'); }
-}
-
-async function launchBrowser() {
-  const opts = {
+let browser;
+try {
+  puppeteer = await loadPuppeteer();
+  browser = await launchBrowser(puppeteer, {
     headless: !flags.has('headful'),
-    // The CLI does its own https→http fallback for scheme-less URLs;
-    // Chrome's silent http→https upgrade would fight it (and surfaces a
-    // failed upgrade as an opaque ERR_BLOCKED_BY_CLIENT).
-    args: ['--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable'],
-  };
-  if (flags.has('insecure')) opts.acceptInsecureCerts = true;
-  const explicit = flags.get('browser') ?? process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (explicit) return puppeteer.launch({ ...opts, executablePath: String(explicit) });
-  // Plain launch works when puppeteer manages its own browser; with
-  // puppeteer-core it throws immediately, and the channels find the
-  // system-installed Chrome (then Edge, which is also Chromium).
-  try { return await puppeteer.launch(opts); } catch {}
-  for (const channel of ['chrome', 'chrome-beta', 'msedge']) {
-    try { return await puppeteer.launch({ ...opts, channel }); } catch {}
-  }
-  return fail('no Chrome found — install Google Chrome, or point --browser (or PUPPETEER_EXECUTABLE_PATH) at a Chrome/Chromium binary');
+    insecure: flags.has('insecure'),
+    executablePath: flags.get('browser') ? String(flags.get('browser')) : undefined,
+  });
+} catch (error) {
+  fail(error.message);
 }
 
-const browser = await launchBrowser();
 let results;
 let shotPath;
 try {
-  const page = await browser.newPage();
-  await page.setViewport(viewport);
   progress(`loading ${url}…`);
+  let page;
   try {
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: timeoutMs });
+    ({ page, url } = await openPage(browser, { url, viewport, timeoutMs, settleMs, schemeless, onNote: progress }));
   } catch (error) {
-    const message = error.message.split('\n')[0];
-    const tlsFailure = /ERR_CERT|ERR_SSL|SSL_PROTOCOL/i.test(message);
-    if (tlsFailure && schemeless && url.startsWith('https://')) {
-      url = url.replace(/^https:/, 'http:');
-      progress(`https failed (${message.split(' at ')[0]}) — retrying over ${url}…`);
-      try {
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: timeoutMs });
-      } catch (retryError) {
-        progressDone();
-        fail(`could not load ${url}: ${retryError.message.split('\n')[0]}`);
-      }
-    } else {
-      progressDone();
-      fail(`could not load ${url}: ${message}${tlsFailure ? '\n(--insecure ignores certificate errors, if you trust the site)' : ''}`);
-    }
+    progressDone();
+    fail(error.message);
   }
-  if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
 
   // A bot-verification interstitial (Cloudflare's "Just a moment…" and kin)
   // is not the site: auditing it would report the challenge page's markup as
   // the site's accessibility, in a confident 0.0s audit. Refuse rather than
   // mislead — except in --headful, where the human completes the check in
   // the visible window and the audit continues against the real page.
-  const onChallenge = () => page.evaluate(() =>
-    /just a moment|attention required|performing security verification/i.test(document.title || '')
-    || !!document.querySelector('script[src*="challenges.cloudflare.com"], #challenge-running, #cf-challenge-running'),
-  ).catch(() => false); // evaluate can race the post-challenge navigation
-  if (await onChallenge()) {
+  if (await isChallenge(page)) {
     if (!flags.has('headful')) {
       progressDone();
       fail(`${url} is showing a bot-verification challenge, not the site — an audit here would measure the challenge page.\nRe-run with --headful and complete the verification in the browser window; pour waits and audits the real page.`);
     }
     progress('bot challenge detected — complete the verification in the browser window…');
     const deadline = Date.now() + 120000;
-    while (await onChallenge()) {
+    while (await isChallenge(page)) {
       if (Date.now() > deadline) {
         progressDone();
         fail('the verification was not completed within 2 minutes');
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await sleep(500);
     }
     // The cleared challenge navigates to the real page; let it arrive.
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await sleep(1500);
   }
 
   if (flags.has('scroll')) {
     progress('scrolling for lazy content…');
-    await page.evaluate(async () => {
-      const step = window.innerHeight;
-      const limit = 60; // ~60 viewports is plenty; endless feeds never finish
-      for (let i = 0; i < limit; i++) {
-        const bottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2;
-        if (bottom) break;
-        window.scrollBy(0, step);
-        await new Promise((resolve) => setTimeout(resolve, 150));
-      }
-      window.scrollTo(0, 0);
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    });
+    await scrollPage(page);
   }
 
   if (shotMode) {
     if (filterName) {
       progress(`applying ${filterName}…`);
-      await page.evaluate((source, name, isSensory) => {
-        (0, eval)(source);
-        const applier = window.PourFilters.createFilterApplier(document);
-        if (isSensory) applier.applySensory(name);
-        else applier.applyVision(name);
-      }, filtersSource, filterName, filterIsSensory);
-      // Overlay positions and animated simulations settle over a few frames.
-      await new Promise((resolve) => setTimeout(resolve, 450));
+      await applyFilter(page, filtersSource, filterName, filterIsSensory);
     }
     const explicitShot = flags.get('shot');
     shotPath = typeof explicitShot === 'string'
@@ -369,25 +296,12 @@ try {
     progress('capturing…');
     await page.screenshot({ path: shotPath, fullPage: flags.has('full') });
   } else {
-    await page.exposeFunction('__pourProgress', (done, total, rule) => {
-      progress(`auditing… ${done}/${total} ${dim(rule)}`);
-    });
     progress('auditing…');
-    results = await page.evaluate(async (source, options) => {
-      // eslint-disable-next-line no-eval
-      (0, eval)(source);
-      // Throttled: every exposed-function call is a CDP message riding the
-      // same connection as the audit; unthrottled progress measurably skews it.
-      let lastPost = 0;
-      const onProgress = (p) => {
-        if (!p.total) return;
-        const now = performance.now();
-        if (p.done !== p.total && now - lastPost < 100) return;
-        lastPost = now;
-        window.__pourProgress(Math.floor(p.done), p.total, p.rule ?? '');
-      };
-      return await window.PourEngine.run(document, options, onProgress);
-    }, engineSource, { tags, ...(flags.get('exclude') ? { exclude: String(flags.get('exclude')) } : {}) });
+    results = await runAudit(page, engineSource, {
+      tags,
+      exclude: flags.get('exclude') ? String(flags.get('exclude')) : undefined,
+      onProgress: (done, total, rule) => progress(`auditing… ${done}/${total} ${dim(rule)}`),
+    });
   }
 } finally {
   await browser.close();
@@ -414,8 +328,7 @@ if (asJson) {
     console.log(`\n${bold('pour')} ${dim('·')} ${url}`);
     console.log(dim(`engine ${results.testEngine.version} · ${viewport.width}x${viewport.height} · ${flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'} · ${seconds}s`));
 
-    const sorted = [...results.violations].sort((a, b) =>
-      (impactRank.get(a.impact) ?? 9) - (impactRank.get(b.impact) ?? 9) || b.nodes.length - a.nodes.length);
+    const sorted = sortViolations(results.violations);
 
     if (!sorted.length) {
       console.log(`\n${color(32, '✓')} no violations found`);
@@ -458,7 +371,7 @@ if (asJson) {
 
   const counts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
   for (const rule of results.violations) counts[rule.impact] = (counts[rule.impact] ?? 0) + rule.nodes.length;
-  const summary = IMPACTS.filter(({ id }) => counts[id]).map(({ id }) => paintImpact(id, `${counts[id]} ${id}`)).join(dim(' · '));
+  const summary = IMPACT_ORDER.filter((id) => counts[id]).map((id) => paintImpact(id, `${counts[id]} ${id}`)).join(dim(' · '));
   const totals = `${summary || color(32, 'clean')}${results.incomplete.length ? dim(` · ${totalNodes(results.incomplete)} to review`) : ''}`;
   console.log(level === 'quiet' ? totals : `\n${totals}\n`);
 }

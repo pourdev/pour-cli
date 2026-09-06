@@ -47,6 +47,8 @@ pour <url> [options]
   --insecure           ignore TLS certificate errors
   --browser <path>     Chrome/Chromium binary to drive
   --headful            run the browser with a visible window
+
+pour mcp               serve pour's browser tools to an AI agent (see below)
 ```
 
 Exit codes: 0 clean, 1 findings (per `--fail-on`), 2 error.
@@ -88,6 +90,37 @@ the DOM; that changes the numbers too, by design.
 `--level quiet` keeps the log to the one totals line; the exit code still
 carries the verdict. Drop it (or use `--level rules`) when you want the
 findings in the CI log too.
+
+## AI agents
+
+`pour mcp` serves the same audit, the sequential focus order and the
+simulation screenshots to an AI agent as tools, over the Model Context
+Protocol on stdio. Any MCP client can use it; the command is `pour` with
+the argument `mcp`:
+
+```sh
+claude mcp add pour -- pour mcp
+```
+
+```json
+{ "mcpServers": { "pour": { "command": "pour", "args": ["mcp"] } } }
+```
+
+In VS Code the pour extension registers the server by itself once pour-cli
+is installed. The tools:
+
+- `pour_audit`: audit a URL. Totals, then each failing rule with its
+  severity, success criteria and up to five elements with the fix (`detail`
+  and `maxNodes` change how much comes back), then the rules the engine
+  would not judge without a human.
+- `pour_focus_order`: the keyboard focus order as Tab visits it, each stop
+  with its accessible name and CSS path, positive tabindex flagged, and the
+  native controls a tabindex of -1 has taken out of reach.
+- `pour_screenshot`: a PNG of the page, plain or through any of the
+  vision, sensory, motor and structure simulations.
+
+Every tool takes a `viewport`, a `scroll` switch and a settle delay, because
+the numbers depend on the page state.
 
 ## License
 

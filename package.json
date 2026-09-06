@@ -1,13 +1,15 @@
 {
   "name": "pour-cli",
-  "version": "0.1.37",
-  "description": "Audit any URL against WCAG 2.2 from the terminal with the pour engine. Headless Chrome, structured findings, CI-friendly exit codes.",
+  "version": "0.1.38",
+  "description": "Audit any URL against WCAG 2.2 from the terminal with the pour engine. Headless Chrome, structured findings, CI-friendly exit codes, and an MCP server that gives AI agents the same tools.",
   "type": "module",
   "bin": {
     "pour": "./pour.mjs"
   },
   "files": [
     "pour.mjs",
+    "lib.mjs",
+    "mcp.mjs",
     "engine.iife.js",
     "filters.iife.js"
   ],
@@ -26,7 +28,9 @@
     "audit",
     "cli",
     "ci",
-    "testing"
+    "testing",
+    "mcp",
+    "agents"
   ],
   "engines": {
     "node": ">=18"
