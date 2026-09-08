@@ -78,19 +78,15 @@ async function loadLane(scriptDir) {
   return { auditSource, WCAG_TAGS, laneFor, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
 }
 
-export async function runCheck({ scriptDir, inputs, flags, version, out = console.log }) {
-  const format = String(flags.get('format') ?? (flags.has('json') ? 'json' : 'terminal'));
-  if (!['terminal', 'json', 'markdown', 'github', 'sarif'].includes(format)) throw new Error(`--format expects terminal | json | markdown | github | sarif, got "${format}"`);
-  const failOn = String(flags.get('fail-on') ?? 'violations');
-  if (!['violations', 'incomplete', 'none'].includes(failOn)) throw new Error(`--fail-on expects violations | incomplete | none, got "${failOn}"`);
-  const level = String(flags.get('level') ?? 'max');
-  const maxNodes = Number(flags.get('max-nodes') ?? 5);
-  const files = collectFiles(inputs);
-  if (!files.length) throw new Error(`no files to check (pour check reads ${CHECKED_EXTENSIONS.join(', ')})`);
-
+/**
+ * The static lane over a list of files: the shared middle of `pour check`
+ * and the MCP server's file audits. Every finding carries the file, the
+ * line and the column, which is what the browser lane cannot give, since a
+ * parsed DOM no longer knows where in the source it came from.
+ */
+export async function checkFiles({ scriptDir, files, bestPractices = false, loadStylesheets = true }) {
   const { auditSource, WCAG_TAGS, laneFor, rulesMeta } = await loadLane(scriptDir);
-  const tags = flags.has('bp') ? [...WCAG_TAGS, 'best-practice'] : WCAG_TAGS;
-  const scopeLabel = flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA';
+  const tags = bestPractices ? [...WCAG_TAGS, 'best-practice'] : WCAG_TAGS;
   const findings = [];
   const perFile = [];
   let abstained = 0;
@@ -99,7 +95,7 @@ export async function runCheck({ scriptDir, inputs, flags, version, out = consol
     const text = readFileSync(file, 'utf8');
     const lane = laneFor(LANGUAGE_BY_EXT[path.extname(file).toLowerCase()], file, text);
     const rel = path.relative(process.cwd(), file).split(path.sep).join('/');
-    const result = await auditSource(text, { lane, url: pathToFileURL(path.resolve(file)).href, tags, loadStylesheets: !flags.has('no-css') });
+    const result = await auditSource(text, { lane, url: pathToFileURL(path.resolve(file)).href, tags, loadStylesheets });
     const at = positions(text);
     const own = result.findings.map((f) => {
       const start = at(f.start);
@@ -128,7 +124,23 @@ export async function runCheck({ scriptDir, inputs, flags, version, out = consol
     abstained += result.abstained ?? 0;
     perFile.push({ file: rel, lane, findings: own, abstained: result.abstained ?? 0, rules: result.rules.map((r) => r.id) });
   }
-  const durationMs = Date.now() - started;
+  return { files: perFile, findings, abstained, durationMs: Date.now() - started, rulesMeta };
+}
+
+export async function runCheck({ scriptDir, inputs, flags, version, out = console.log }) {
+  const format = String(flags.get('format') ?? (flags.has('json') ? 'json' : 'terminal'));
+  if (!['terminal', 'json', 'markdown', 'github', 'sarif'].includes(format)) throw new Error(`--format expects terminal | json | markdown | github | sarif, got "${format}"`);
+  const failOn = String(flags.get('fail-on') ?? 'violations');
+  if (!['violations', 'incomplete', 'none'].includes(failOn)) throw new Error(`--fail-on expects violations | incomplete | none, got "${failOn}"`);
+  const level = String(flags.get('level') ?? 'max');
+  const maxNodes = Number(flags.get('max-nodes') ?? 5);
+  const files = collectFiles(inputs);
+  if (!files.length) throw new Error(`no files to check (pour check reads ${CHECKED_EXTENSIONS.join(', ')})`);
+
+  const scopeLabel = flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA';
+  const { files: perFile, findings, abstained, durationMs, rulesMeta } = await checkFiles({
+    scriptDir, files, bestPractices: flags.has('bp'), loadStylesheets: !flags.has('no-css'),
+  });
   const counts = tally(findings);
   const rulesRan = new Set(perFile.flatMap((p) => p.rules));
 

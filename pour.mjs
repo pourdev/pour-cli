@@ -8,6 +8,11 @@
 //
 // Usage:
 //   pour <url>                     # WCAG 2.2 A+AA audit, human report
+//   pour index.html                # a page on disk, served from a loopback
+//                                  # port so its relative and root-relative
+//                                  # assets load (file:// cannot)
+//   pour build/page.html --root build   # when assets are addressed from the
+//                                  # site root rather than the page's folder
 //   pour <url> --json              # full engine results as JSON
 //   pour <url> --viewport 1440x900 # responsive pages serve different content
 //                                  # per breakpoint — the width IS part of
@@ -22,7 +27,10 @@
 //   pour <url> --headful           # watch the browser work
 //   pour mcp                       # serve the audit, the focus order and the
 //                                  # simulation screenshots to an AI agent as
-//                                  # tools (MCP over stdio; see mcp.mjs)
+//                                  # tools (MCP over stdio; see mcp.mjs). The
+//                                  # tools take a URL or a local path, and
+//                                  # refuse file: URLs, which this command
+//                                  # does not: see the note in mcp.mjs
 //   pour report yoursite.com       # every internal page of a site (or the
 //                                  # home page of every domain in a list
 //                                  # file), audited with a progress screen
@@ -45,7 +53,7 @@
 //               and puppeteer-core drives the system Chrome (no 170MB
 //               browser download on install).
 // Both paths are resolved at runtime in lib.mjs; keep changes working in both.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
@@ -53,7 +61,7 @@ import { fileURLToPath } from 'node:url';
 import {
   WCAG_TAGS, loadEngineSource, loadFiltersSource, listFilters, resolveFilter, normaliseUrl, parseViewport,
   loadPuppeteer, launchBrowser, openPage, isChallenge, scrollPage, runAudit, applyFilter, sortViolations, toSc,
-  IMPACT_ORDER, sleep,
+  IMPACT_ORDER, sleep, serveRoot,
 } from './lib.mjs';
 import { makePaint, findingsFromResults, markdownReport } from './report.mjs';
 
@@ -75,12 +83,15 @@ for (let i = 0; i < argv.length; i++) {
 
 const usage = `pour — audit a URL against WCAG 2.2 with the pour engine
 
-Usage: pour <url> [options]
+Usage: pour <url | file.html> [options]
        pour report <url | list.csv> [options]
        pour check <files, folders or globs> [options]
        pour mcp [--browser <path>]
 
 Options:
+  --root <dir>         with a local .html file: the folder to serve as the
+                       site root, for a page whose assets are addressed from
+                       there (/css/site.css). Default: the file's own folder
   --json               print the full engine results as JSON
   --viewport WxH       viewport (default 1440x900); a bare width implies x900
   --scroll             scroll through the page before auditing (lazy content)
@@ -135,7 +146,15 @@ Options:
                        Model Context Protocol on stdio: pour_audit,
                        pour_focus_order and pour_screenshot. Add it to any
                        MCP client as the command "pour" with the argument
-                       "mcp"; the VS Code extension adds it by itself.
+                       "mcp"; the VS Code extension adds it by itself. Each
+                       tool takes a url, http or https, or a path to a file
+                       on disk, which is served over a loopback port so its
+                       relative assets load. A path reaches inside the
+                       directory the server was started in; POUR_MCP_ROOT
+                       names a different one. file: URLs are refused there:
+                       a model chooses those addresses, and the disk is not
+                       a web page. This command still takes them, since you
+                       are the one typing.
 
 Exit codes: 0 clean, 1 findings (per --fail-on), 2 error`;
 
@@ -224,12 +243,45 @@ if (positional[0] === 'report') {
 
   let url = positional[0];
   let schemeless = false;
-  if (url) {
-    // A scheme-less URL gets https first, like a browser address bar — and like
+
+  // A target that names an .html file on disk is audited as the page it is.
+  // It gets served from a loopback port rather than opened as file://, so
+  // that its relative and root-relative assets load: over file:// a
+  // stylesheet at /css/site.css never arrives, and the audit quietly reports
+  // an unstyled page as if it were the real one. --root names the folder to
+  // serve as the site root when the page addresses its assets from there.
+  // The kinds pour reads that are not pages belong to `pour check`, which
+  // reads source rather than rendering it.
+  const TEMPLATE_EXTENSIONS = ['.jsx', '.tsx', '.vue', '.svelte', '.liquid', '.njk', '.nunjucks'];
+  let localFile = null;
+  let localRoot = null;
+  if (url && !/^[a-z][a-z0-9+.-]*:/i.test(url) && existsSync(url) && statSync(url).isFile()) {
+    const ext = path.extname(url).toLowerCase();
+    if (ext === '.html' || ext === '.htm') {
+      localFile = path.resolve(url);
+      localRoot = flags.get('root') ? path.resolve(String(flags.get('root'))) : path.dirname(localFile);
+      const within = path.relative(localRoot, localFile);
+      if (within.startsWith('..') || path.isAbsolute(within)) fail(`--root ${localRoot} does not contain ${localFile}`);
+    } else if (TEMPLATE_EXTENSIONS.includes(ext)) {
+      fail(`${url} is a template or a component, not a page, so there is nothing to render.\nRead it as source instead: pour check ${url}`);
+    }
+  }
+  if (url && !localFile) {
+    // A scheme-less URL gets https first, like a browser address bar, and like
     // the address bar, a TLS failure later falls back to http (shared hosts
     // often serve a real site on 80 behind a wrong-name cert on 443).
     try { ({ url, schemeless } = normaliseUrl(url)); } catch (error) { fail(error.message); }
   }
+
+  // What the report calls the target. A served file answers as the file it
+  // is: the loopback address is plumbing and means nothing to the reader.
+  const label = (() => {
+    if (!localFile) return url;
+    const relative = path.relative(process.cwd(), localFile);
+    // A file below the working directory reads better as a short path; one
+    // outside it reads better in full than as a row of dot-dots.
+    return relative.startsWith('..') ? localFile : relative.split(path.sep).join('/');
+  })();
 
   let viewport;
   try { viewport = parseViewport(flags.get('viewport')); } catch (error) { fail(`--${error.message}`); }
@@ -313,8 +365,13 @@ if (positional[0] === 'report') {
 
   let results;
   let shotPath;
+  let served = null;
   try {
-    progress(`loading ${url}…`);
+    if (localFile) {
+      served = await serveRoot(localRoot);
+      url = `${served.origin}/${path.relative(localRoot, localFile).split(path.sep).join('/')}`;
+    }
+    progress(`loading ${label}…`);
     let page;
     try {
       ({ page, url } = await openPage(browser, { url, viewport, timeoutMs, settleMs, schemeless, onNote: progress }));
@@ -359,7 +416,7 @@ if (positional[0] === 'report') {
       const explicitShot = flags.get('shot');
       shotPath = typeof explicitShot === 'string'
         ? explicitShot
-        : `pour-${new URL(url).hostname}${filterName ? `-${filterName}` : ''}.png`;
+        : `pour-${localFile ? path.basename(localFile, path.extname(localFile)) : new URL(url).hostname}${filterName ? `-${filterName}` : ''}.png`;
       progress('capturing…');
       await page.screenshot({ path: shotPath, fullPage: flags.has('full') });
     } else {
@@ -372,21 +429,25 @@ if (positional[0] === 'report') {
     }
   } finally {
     await browser.close();
+    await served?.close();
   }
   progressDone();
 
   // ------------------------------------------------------------------- report
   if (shotMode) {
-    console.log(`${bold('pour')} ${dim('·')} ${url}`);
+    console.log(`${bold('pour')} ${dim('·')} ${label}`);
     console.log(`saved ${bold(shotPath)}${filterName ? ` ${dim(`· ${filterName}`)}` : ''} ${dim(`· ${viewport.width}x${viewport.height}${flags.has('full') ? ' · full page' : ''}`)}`);
     process.exitCode = 0;
   } else {
 
   if (asJson) {
-    console.log(JSON.stringify({ ...results, viewport }, null, 2));
+    // A served file reports as the file. The loopback port it was reached
+    // through changes every run and would only make two runs of the same
+    // page look different.
+    console.log(JSON.stringify({ ...results, url: label, viewport }, null, 2));
   } else if (format === 'markdown') {
-    console.log(markdownReport(findingsFromResults(results, url), {
-      title: url,
+    console.log(markdownReport(findingsFromResults(results, label), {
+      title: label,
       meta: [`engine ${results.testEngine.version}`, `${viewport.width}x${viewport.height}`, flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'],
       maxNodes,
     }));
@@ -398,7 +459,7 @@ if (positional[0] === 'report') {
     // --level quiet keeps only the totals line below, for scripts and quick
     // checks; rules keeps the per-rule lines but drops the element details.
     if (level !== 'quiet') {
-      console.log(`\n${bold('pour')} ${dim('·')} ${url}`);
+      console.log(`\n${bold('pour')} ${dim('·')} ${label}`);
       console.log(dim(`engine ${results.testEngine.version} · ${viewport.width}x${viewport.height} · ${flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'} · ${seconds}s`));
 
       const sorted = sortViolations(results.violations);

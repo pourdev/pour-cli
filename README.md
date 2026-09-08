@@ -26,11 +26,14 @@ binary to use something else.
 ## Usage
 
 ```
-pour <url> [options]
+pour <url | file.html> [options]
 pour check <files, folders or globs> [options]
 pour report <url | list.csv> [options]
 pour mcp
 
+  --root <dir>         with a local .html file: the folder to serve as the
+                       site root, for a page whose assets are addressed from
+                       there (/css/site.css). Default: the file's own folder
   --json               print the full engine results as JSON
   --format <what>      terminal (default) | json | markdown (a pull-request
                        comment); pour check adds github (annotations on the
@@ -91,6 +94,26 @@ measures what is actually rendered, so the viewport is part of the result:
 the report header echoes it, and comparing two runs only makes sense at the
 same width. `--scroll` walks the page first so lazy-loaded content is in
 the DOM; that changes the numbers too, by design.
+
+## A page on disk
+
+A target that names an `.html` file is audited as the page it is, in the
+browser, with every rule that needs layout and paint:
+
+```sh
+pour index.html
+pour build/about.html --root build   # assets addressed from the site root
+```
+
+The file is served from a loopback port for the length of the audit, so its
+relative and root-relative assets load the way they will in production.
+Opening it as a `file://` URL instead would leave a stylesheet at
+`/css/site.css` unfetched, and the audit would report an unstyled page as if
+it were the real one, usually as a clean result. `--root` says which folder
+is the site root when the page addresses its assets from there rather than
+from its own folder.
+
+`file://` URLs still work if you type one, and carry that caveat with them.
 
 ## Checking files
 
@@ -190,6 +213,22 @@ is installed. The tools:
 
 Every tool takes a `viewport`, a `scroll` switch and a settle delay, because
 the numbers depend on the page state.
+
+Each tool takes either a `url` or a `path` to a file on disk. A path is
+served over a loopback port, the same way `pour index.html` is, so relative
+assets load; `root` names the site root when they are addressed from there.
+A path to a template or a component (`.jsx`, `.vue`, `.liquid` and the rest)
+is read as source by the static lane instead, and answers with the line and
+column of every finding, saying plainly that it was not rendered.
+
+A path reaches only inside the directory the server was started in, which
+`POUR_MCP_ROOT` can point elsewhere. Started at the filesystem root, with no
+project to stay inside, the server refuses paths altogether.
+
+The server loads `http` and `https` and nothing else. `file://` is refused
+there, though the command still takes it: an agent chooses the addresses it
+asks for, often from a page it has just read, and the disk is not a web
+page.
 
 ## License
 

@@ -57,7 +57,7 @@ async function acceptConsent(page, how = true) {
 }
 
 // scripts/cli/lib.mjs
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 var srcDir = (scriptDir, ...parts) => path.resolve(scriptDir, "..", "..", "src", ...parts);
 async function loadEngineSource(scriptDir) {

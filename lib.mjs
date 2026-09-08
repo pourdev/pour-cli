@@ -5,7 +5,8 @@
 // can hold. Dual-home like pour.mjs: this file ships verbatim in the
 // pour-cli package next to the prebuilt engine.iife.js and filters.iife.js,
 // and in the monorepo bundles both fresh from src/ on every run.
-import { existsSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -122,6 +123,57 @@ export async function launchBrowser(puppeteer, { headless = true, insecure = fal
   throw new Error('no Chrome found — install Google Chrome, or point --browser (or PUPPETEER_EXECUTABLE_PATH) at a Chrome/Chromium binary');
 }
 
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8', '.webmanifest': 'application/manifest+json',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.ico': 'image/x-icon',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg',
+};
+
+/**
+ * A local page, served. A file:// page has no server behind it, so root
+ * relative assets (/styles.css) never load and the origin is the disk
+ * itself. An ephemeral loopback server rooted at the page's folder, or at
+ * the folder the caller names, loads it the way production will and gives
+ * it an ordinary http origin. One server per call, closed with the page.
+ */
+export async function serveRoot(root) {
+  const server = createServer((req, res) => {
+    let file;
+    try {
+      file = path.join(root, decodeURIComponent(new URL(req.url, 'http://127.0.0.1').pathname));
+    } catch {
+      res.writeHead(400).end();
+      return;
+    }
+    // Whatever the path walked through to get here, it ends inside the root.
+    const within = path.relative(root, file);
+    if (within.startsWith('..') || path.isAbsolute(within)) {
+      res.writeHead(403).end();
+      return;
+    }
+    if (existsSync(file) && statSync(file).isDirectory()) file = path.join(file, 'index.html');
+    if (!existsSync(file) || !statSync(file).isFile()) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream' });
+    createReadStream(file).pipe(res);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return {
+    origin: `http://127.0.0.1:${server.address().port}`,
+    close: () => new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); }),
+  };
+}
 /**
  * A new page with the URL loaded: https first for a scheme-less address,
  * retried over http when the TLS handshake fails (shared hosts often serve
