@@ -1,4 +1,4 @@
-/*! pour check lane 1.39.0 | MIT | https://pour.dev */
+/*! pour check lane 1.40.0 | MIT | https://pour.dev */
 
 // src/vscode/audit.js
 import jsdom from "jsdom";
@@ -3429,8 +3429,15 @@ var nested_interactive_default = {
   selector: INTERACTIVE,
   evaluate(element, { isRendered: isRendered2 }) {
     const NATIVE = "a[href], button, input, select, textarea, summary, audio[controls], video[controls]";
-    const nested = [...element.querySelectorAll(INTERACTIVE)].find((el) => !el.matches(":disabled") && !(el.hasAttribute("tabindex") && el.tabIndex < 0) && !(el.tagName === "INPUT" && el.type === "hidden") && isRendered2(el) && !el.closest('[aria-hidden="true"]') && (el.matches(NATIVE) || el.hasAttribute("tabindex")));
+    const candidates = [...element.querySelectorAll(INTERACTIVE)].filter((el) => !el.matches(":disabled") && !isInert(el) && !(el.tagName === "INPUT" && el.type === "hidden") && isRendered2(el) && !el.closest('[aria-hidden="true"]') && (el.matches(NATIVE) || el.hasAttribute("tabindex")));
+    const nested = candidates.find((el) => !(el.hasAttribute("tabindex") && el.tabIndex < 0)) ?? candidates[0];
     if (!nested) return { status: "pass" };
+    if (nested.hasAttribute("tabindex") && nested.tabIndex < 0 && !element.matches("a[href], button")) {
+      return {
+        status: "incomplete",
+        message: `This control contains an element (<${nested.tagName.toLowerCase()}>) with a negative tabindex. It can still receive focus. Check that both controls expose the intended name and role, and that focusing and activating the child works correctly.`
+      };
+    }
     if (element.tagName === "SUMMARY") {
       return {
         status: "incomplete",
@@ -3499,6 +3506,26 @@ var bypass_blocks_default = {
 
 // src/engine/rules/wcag/2.5.8-target-size.js
 var TARGETS = 'a[href], button, input, select, [role="button"], [role="link"]';
+function containsComposed(ancestor, element) {
+  if (ancestor.contains(element)) return true;
+  if (ancestor.getRootNode() === element.getRootNode() && !element.assignedSlot) return false;
+  for (let node = element; node; node = node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host) {
+    if (node === ancestor) return true;
+  }
+  return false;
+}
+function outsideHiddenOverflow(element, rect) {
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    const style = getComputedStyle(parent);
+    if (style.display === "contents") continue;
+    const x = /^(hidden|clip)$/.test(style.overflowX);
+    const y = /^(hidden|clip)$/.test(style.overflowY);
+    if (!x && !y) continue;
+    const clip = parent.getBoundingClientRect();
+    if (x && (clip.width === 0 || rect.right <= clip.left || rect.left >= clip.right) || y && (clip.height === 0 || rect.bottom <= clip.top || rect.top >= clip.bottom)) return true;
+  }
+  return false;
+}
 function isHiddenFromPointer(element, rect) {
   if (rect.width <= 1 || rect.height <= 1) return true;
   if (rect.right <= 0 || rect.bottom <= 0) return true;
@@ -3819,8 +3846,12 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
         if (spacingException) {
           const crowds = (other, j) => {
             if (j === i || !laidOut[j]) return false;
-            if (other.contains(element) || element.contains(other)) return false;
-            if (paintedEncloses(other, rects[j], rects[i]) || paintedEncloses(element, rects[i], rects[j])) return false;
+            if (containsComposed(other, element) || containsComposed(element, other)) return false;
+            if (paintedEncloses(other, rects[j], rects[i]) || paintedEncloses(element, rects[i], rects[j])) {
+              const destination = destinationOf(element);
+              if (destination && destination === destinationOf(other)) return false;
+              if (outsideHiddenOverflow(element, rects[i]) || outsideHiddenOverflow(other, rects[j])) return false;
+            }
             if (fixedContextOf(other) !== fixedContextOf(element)) return false;
             const within = (box) => {
               if (undersized[j]) {
@@ -4399,7 +4430,8 @@ var definition_list_default = {
   selector: "dl:not([role])",
   // a role attribute replaces the dl semantics
   evaluate(element, { isRendered: isRendered2 }) {
-    const invalid = [...element.children].filter((child) => !ALLOWED.has(child.tagName) && !NEVER_RENDERED.has(child.tagName) && (!isRendered2 || isRendered2(child)));
+    const exposed = (child) => !NEVER_RENDERED.has(child.tagName) && !child.closest('[aria-hidden="true"]') && !isInert(child) && (!isRendered2 || isRendered2(child) || getComputedStyle(child).display === "contents");
+    const invalid = [...element.children].filter((child) => !ALLOWED.has(child.tagName) && exposed(child));
     if (invalid.length) {
       const tags = [...new Set(invalid.map((child) => `<${child.tagName.toLowerCase()}>`))].join(", ");
       return {
@@ -4408,13 +4440,47 @@ var definition_list_default = {
         fix: "Restructure the list into <dt>/<dd> pairs, or use a different element."
       };
     }
-    const emptyWrappers = [...element.children].filter((child) => child.tagName === "DIV" && ![...child.children].some((inner) => inner.tagName === "DT" || inner.tagName === "DD"));
+    const emptyWrappers = [...element.children].filter((child) => child.tagName === "DIV" && exposed(child) && ![...child.children].some((inner) => inner.tagName === "DT" || inner.tagName === "DD"));
     if (emptyWrappers.length) {
       return {
         status: "fail",
         message: `${emptyWrappers.length} <div> wrapper(s) in this <dl> hold no <dt>/<dd> directly \u2014 the term/description pairing breaks when the pairs sit deeper than the wrapper.`,
         fix: "Make each <div> child of the <dl> contain its <dt>/<dd> pair directly, or flatten the pairs into the <dl> itself."
       };
+    }
+    const children = [...element.children].filter(exposed);
+    const groups = [
+      [...element.children].filter((child) => child.tagName !== "DIV"),
+      ...children.filter((child) => child.tagName === "DIV").map((child) => [...child.children])
+    ];
+    for (const members of groups) {
+      const group = members.filter(exposed);
+      const concealedPairMember = members.some((child) => (child.tagName === "DT" || child.tagName === "DD") && !exposed(child));
+      const concealedResult = {
+        status: "incomplete",
+        message: "A term or description in this group is hidden from assistive technology. Check that any disclosure control exposes the associated content when opened, and that the term and description relationship remains available."
+      };
+      let last = null;
+      for (const child of group) {
+        if (child.tagName !== "DT" && child.tagName !== "DD") continue;
+        if (child.tagName === "DD" && last === null) {
+          if (concealedPairMember) return concealedResult;
+          return {
+            status: "fail",
+            message: "This description list has a description without a preceding term in its group.",
+            fix: "Add a <dt> before the <dd>, or use a paragraph when the content is not a term and description."
+          };
+        }
+        last = child.tagName;
+      }
+      if (last === "DT") {
+        if (concealedPairMember) return concealedResult;
+        return {
+          status: "fail",
+          message: "This description list ends a group with a term that has no description.",
+          fix: "Follow the <dt> element or elements with at least one <dd> in the same group."
+        };
+      }
     }
     return { status: "pass" };
   }
@@ -4682,15 +4748,19 @@ var link_in_text_block_default = {
   // embedded in prose exactly as 1.4.1 means it. Pure link lists (navs,
   // blogrolls) are still excluded, but by the ownText guard below rather than
   // by tag: in <li><a>Home</a></li> the item has no text of its own.
-  // <div> was measured too and added nothing on any test site, so it stays
-  // out rather than widening the blast radius for no gain.
-  selector: "p a[href], dd a[href], blockquote a[href], td a[href], li a[href]",
+  // Prose in a generic container has the same requirement. F73 does not
+  // limit colour-only links to paragraph markup. The text and shared-line
+  // checks below keep navigation and separate blocks out of this lane.
+  // https://www.w3.org/WAI/WCAG22/Techniques/failures/F73
+  selector: "p a[href], dd a[href], blockquote a[href], td a[href], li a[href], div a[href]",
   visibility: "visual",
   // colour distinction is a purely visual concern
   evaluate(element, { ownText: ownText2 }) {
-    const parent = element.closest("p, dd, blockquote, td, li");
+    const parent = element.closest("p, dd, blockquote, td, li, div");
     if (!element.textContent.trim() || !parent) return { status: "pass" };
-    if (ownText2(parent).replace(/\s+/g, "").length < 10) return { status: "pass" };
+    const surroundingText = ownText2(parent).trim();
+    if (!/[\p{L}\p{N}]/u.test(surroundingText)) return { status: "pass" };
+    const shortContext = surroundingText.replace(/\s+/g, "").length < 10;
     const style = getComputedStyle(element);
     const parentStyle = getComputedStyle(parent);
     const weight = (s) => parseInt(s.fontWeight, 10) || 400;
@@ -4811,6 +4881,13 @@ var link_in_text_block_default = {
       return {
         status: "incomplete",
         message: `This link has no underline and only ${shown}:1 colour difference from the surrounding text, but its font size differs from the prose by ${sizeStep.toFixed(1).replace(/\.0$/, "")}px, one of the cues G182 names. Judge by eye whether the size alone identifies it as a link; if it does not, this fails SC 1.4.1.`,
+        fix: reviewFix
+      };
+    }
+    if (shortContext) {
+      return {
+        status: "incomplete",
+        message: `This link has no detected non-colour cue and only ${shown}:1 colour difference from nearby text. The surrounding text is a short fragment. Check whether it forms a sentence or other prose with the link; if it does, colour alone does not distinguish the link sufficiently.`,
         fix: reviewFix
       };
     }
