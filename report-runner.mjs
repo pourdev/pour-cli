@@ -111,8 +111,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.116",
-  // Release: five new simulations (floaters, migraine aura, forced colours, text spacing, glossy screen), a detail-fixation zoom, touch on every tracked simulation and dated NEW badges.
+  version: "1.2.117",
+  // Release: Detail Fixation magnifies through an SVG displacement lens, a softer glossy screen, and the simulation count counted from the catalog.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
