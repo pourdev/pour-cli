@@ -1,4 +1,4 @@
-/*! pour check lane 1.40.0 | MIT | https://pour.dev */
+/*! pour check lane 1.41.0 | MIT | https://pour.dev */
 
 // src/vscode/audit.js
 import jsdom from "jsdom";
@@ -6,7 +6,7 @@ import jsdom from "jsdom";
 // src/engine/lib/dom.js
 var NEVER_RENDERED = /* @__PURE__ */ new Set(["SCRIPT", "TEMPLATE", "STYLE", "LINK", "META"]);
 function collectRoots(context) {
-  const roots = [context];
+  const roots = context.shadowRoot ? [context, context.shadowRoot] : [context];
   for (let i = 0; i < roots.length; i++) {
     if (!roots[i].querySelectorAll) continue;
     for (const el of roots[i].querySelectorAll("*")) {
@@ -16,7 +16,7 @@ function collectRoots(context) {
   return roots;
 }
 function flatTreeParent(node) {
-  return node.parentElement ?? node.getRootNode()?.host ?? null;
+  return node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host ?? null;
 }
 function isRendered(element) {
   if (typeof element.checkVisibility === "function") {
@@ -27,28 +27,78 @@ function isRendered(element) {
 }
 function isVisible(element) {
   for (let node = element; node; node = flatTreeParent(node)) {
-    if (node.getAttribute?.("aria-hidden") === "true") return false;
+    if (node.getAttribute?.("aria-hidden") === "true" || node.hasAttribute?.("inert")) return false;
   }
-  return isRendered(element);
+  if (isRendered(element)) return true;
+  const style = getComputedStyle(element);
+  if (style.display !== "contents" || style.visibility === "hidden" || style.visibility === "collapse") return false;
+  for (let node = flatTreeParent(element); node; node = flatTreeParent(node)) {
+    if (getComputedStyle(node).display === "none") return false;
+  }
+  return true;
+}
+var pathRoots = /* @__PURE__ */ new WeakMap();
+var pathObservers = /* @__PURE__ */ new Set();
+function releaseDOMCaches() {
+  for (const observer of pathObservers) observer.disconnect();
+  pathObservers.clear();
+  pathRoots = /* @__PURE__ */ new WeakMap();
+}
+var resetDOMCaches = releaseDOMCaches;
+function pathIndex(root) {
+  let index = pathRoots.get(root);
+  if (!index) {
+    const observer = typeof MutationObserver === "function" ? new MutationObserver(() => {
+      index.ids = null;
+      index.parents = /* @__PURE__ */ new WeakMap();
+    }) : null;
+    index = { ids: null, parents: /* @__PURE__ */ new WeakMap(), observer };
+    if (observer) {
+      observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["id"] });
+      pathObservers.add(observer);
+    }
+    pathRoots.set(root, index);
+  }
+  if (index.observer?.takeRecords().length) {
+    index.ids = null;
+    index.parents = /* @__PURE__ */ new WeakMap();
+  }
+  if (!index.ids) {
+    index.ids = /* @__PURE__ */ new Map();
+    for (const el of root.querySelectorAll("[id]")) {
+      index.ids.set(el.id, (index.ids.get(el.id) ?? 0) + 1);
+    }
+  }
+  return index;
+}
+function siblingPosition(element, index) {
+  const parent = element.parentElement;
+  let positions = index.parents.get(parent);
+  if (!positions) {
+    const counts = /* @__PURE__ */ new Map();
+    positions = /* @__PURE__ */ new WeakMap();
+    for (const child of parent.children) {
+      const position = (counts.get(child.tagName) ?? 0) + 1;
+      counts.set(child.tagName, position);
+      positions.set(child, { position, repeated: false });
+    }
+    for (const child of parent.children) positions.get(child).repeated = counts.get(child.tagName) > 1;
+    index.parents.set(parent, positions);
+  }
+  return positions.get(element);
 }
 function cssPathInRoot(element) {
   const root = element.getRootNode();
-  const uniqueId = (el) => el.id && root.querySelectorAll(`#${CSS.escape(el.id)}`).length === 1;
+  const index = pathIndex(root);
+  const uniqueId = (el) => el.id && index.ids.get(el.id) === 1;
   if (uniqueId(element)) return `#${CSS.escape(element.id)}`;
   const parts = [];
   let current = element;
   while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.documentElement) {
     let part = current.tagName.toLowerCase();
     if (current.parentElement) {
-      let index = 1;
-      for (let sib = current.previousElementSibling; sib; sib = sib.previousElementSibling) {
-        if (sib.tagName === current.tagName) index += 1;
-      }
-      let repeated = index > 1;
-      for (let sib = current.nextElementSibling; !repeated && sib; sib = sib.nextElementSibling) {
-        if (sib.tagName === current.tagName) repeated = true;
-      }
-      if (repeated) part += `:nth-of-type(${index})`;
+      const { position, repeated } = siblingPosition(current, index);
+      if (repeated) part += `:nth-of-type(${position})`;
     }
     parts.unshift(part);
     if (current.parentElement && uniqueId(current.parentElement)) {
@@ -90,7 +140,7 @@ function isEmbeddedDocument(doc) {
   return !!(win && win.top && win !== win.top);
 }
 function isInert(element) {
-  for (let node = element; node; node = node.parentElement ?? node.getRootNode?.()?.host ?? null) {
+  for (let node = element; node; node = flatTreeParent(node)) {
     if (node.nodeType === 1 && node.hasAttribute("inert")) return true;
   }
   return false;
@@ -165,8 +215,8 @@ var document_title_default = {
     const normalized = title.replace(/\s+/g, " ").toLowerCase();
     if (PLACEHOLDER.has(normalized) || /^(?:untitled|new (?:document|page|tab))[\s-]*\d+$/.test(normalized)) {
       return {
-        status: "fail",
-        message: `\u201C${title}\u201D is a placeholder left by an editor or template. It gives no topic and no purpose, so a screen reader announces nothing useful when the page loads, and a row of open tabs, bookmarks or history entries becomes impossible to tell apart.`,
+        status: "incomplete",
+        message: `\u201C${title}\u201D resembles a template title. Check whether it describes this page's actual topic or purpose; the same words can also be a legitimate subject or name.`,
         fix: "Put this page's own subject in the title first, then the site name."
       };
     }
@@ -235,216 +285,6 @@ var valid_lang_parts_default = {
       status: "fail",
       message: `lang="${lang}" is not a valid language tag, so screen readers may switch to the wrong pronunciation.`,
       fix: 'Use a BCP 47 tag such as lang="fr" or lang="de-AT".'
-    };
-  }
-};
-
-// src/engine/rules/wcag/1.1.1-image-alt.js
-var FILENAME_ALT = /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)([?#].*)?$/i;
-var GENERIC_ALT = /^(image|img|photo|photograph|picture|graphic|icon|untitled|placeholder|spacer|\d+)$/i;
-var image_alt_default = {
-  id: "image-alt",
-  name: "Image alt text",
-  impact: "critical",
-  tags: ["wcag2a", "wcag111"],
-  help: "Every <img> needs a text alternative",
-  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/non-text-content.html",
-  selector: "img",
-  evaluate(element, { accessibleName: accessibleName2 }) {
-    const role = element.getAttribute("role");
-    if (role === "presentation" || role === "none") return { status: "pass" };
-    if (element.hasAttribute("alt")) {
-      const alt = element.getAttribute("alt");
-      if (alt === "") return { status: "pass" };
-      if (!alt.trim()) {
-        return {
-          status: "incomplete",
-          message: `alt="${alt}" is only whitespace \u2014 not a description, and not the decorative marker either (that is alt="" with nothing between the quotes). Screen readers skip it today, so check the image is really decorative; if it carries meaning, describe it, and either way use alt="".`
-        };
-      }
-      const trimmed = alt.trim();
-      if (FILENAME_ALT.test(trimmed) || GENERIC_ALT.test(trimmed)) {
-        return {
-          status: "incomplete",
-          message: `alt="${trimmed}" looks like a file name or placeholder, not a description \u2014 screen-reader users learn nothing from it. If the image carries meaning, describe it; if not, use alt="".`
-        };
-      }
-      return { status: "pass" };
-    }
-    if (accessibleName2(element)) return { status: "pass" };
-    return {
-      status: "fail",
-      message: "This image has no alt attribute, so screen readers announce its file name or nothing at all.",
-      fix: `Describe the image: <img alt="\u2026" src="${element.getAttribute("src") ?? ""}">, or mark it decorative with alt="".`
-    };
-  }
-};
-
-// src/engine/lib/accessible-name.js
-var TEXT_INPUT = /* @__PURE__ */ new Set([
-  "text",
-  "search",
-  "url",
-  "tel",
-  "email",
-  "password",
-  "number",
-  "date",
-  "datetime-local",
-  "month",
-  "time",
-  "week",
-  ""
-]);
-var LABELABLE = /* @__PURE__ */ new Set(["input", "select", "textarea", "button", "meter", "output", "progress"]);
-function accessibleName(element) {
-  return computeName(element, false);
-}
-function labelledByName(element) {
-  const refs = element.getAttribute?.("aria-labelledby");
-  if (!refs) return "";
-  const root = element.getRootNode();
-  return refs.split(/\s+/).filter(Boolean).map((id) => {
-    const target = root.getElementById?.(id);
-    return target ? computeName(target, true) : "";
-  }).join(" ").replace(/\s+/g, " ").trim();
-}
-function computeName(element, inLabelledBy) {
-  if (!inLabelledBy) {
-    const fromLabelledBy = labelledByName(element);
-    if (fromLabelledBy) return fromLabelledBy;
-  }
-  const ariaLabel = element.getAttribute("aria-label")?.trim();
-  if (ariaLabel) return ariaLabel;
-  const tag = element.tagName.toLowerCase();
-  if (tag === "img" || tag === "area") {
-    const alt = element.getAttribute("alt")?.trim();
-    if (alt) return alt;
-  }
-  if (LABELABLE.has(tag) && element.labels?.length) {
-    const text = [...element.labels].map((label) => label.textContent).join(" ").trim();
-    if (text) return text;
-  }
-  if (tag === "input" || tag === "select" || tag === "textarea") {
-    if (element.type === "submit" || element.type === "reset" || element.type === "button") {
-      const value = (element.value ?? element.getAttribute("value") ?? "").trim();
-      if (value) return value;
-    }
-    if (element.type === "image") {
-      const alt = element.getAttribute("alt")?.trim();
-      if (alt) return alt;
-    }
-    if (inLabelledBy && (tag === "textarea" || TEXT_INPUT.has(element.type))) {
-      const value = (element.value ?? "").trim();
-      if (value) return value;
-    }
-    if (element.type === "submit") return "Submit";
-    if (element.type === "reset") return "Reset";
-  }
-  const fromContents = visibleContentText(element, inLabelledBy).replace(/\s+/g, " ").trim();
-  if (fromContents) return fromContents;
-  return (element.getAttribute("title") ?? element.getAttribute("placeholder") ?? "").trim();
-}
-function visibleContentText(element, includeHidden) {
-  const nodes = element.shadowRoot ? element.shadowRoot.childNodes : element.childNodes;
-  return generatedContent(element, "::before") + textFromNodes(nodes, includeHidden) + generatedContent(element, "::after");
-}
-function generatedContent(element, pseudo) {
-  const content = getComputedStyle(element, pseudo).content;
-  if (!content || content === "none" || content === "normal") return "";
-  const alt = content.match(/\/\s*"((?:[^"\\]|\\.)*)"\s*$/);
-  if (alt) return alt[1].replace(/\\(.)/g, "$1");
-  const match = content.match(/^"((?:[^"\\]|\\.)*)"$/);
-  return match ? match[1].replace(/\\(.)/g, "$1") : "";
-}
-function textFromNodes(nodes, includeHidden) {
-  let text = "";
-  for (const node of nodes) {
-    if (node.nodeType === 3) {
-      text += node.textContent;
-      continue;
-    }
-    if (node.nodeType !== 1) continue;
-    const tag = node.tagName.toLowerCase();
-    if (tag === "script" || tag === "style" || tag === "noscript" || tag === "template") continue;
-    if (!includeHidden) {
-      if (node.getAttribute("aria-hidden") === "true" || node.hasAttribute("hidden")) continue;
-      const style = getComputedStyle(node);
-      if (style.display === "none" || style.visibility === "hidden") continue;
-    }
-    if (tag === "slot") {
-      const assigned = node.assignedNodes?.() ?? [];
-      text += textFromNodes(assigned.length ? assigned : node.childNodes, includeHidden);
-      continue;
-    }
-    if (tag === "img" || tag === "area") {
-      const imgAria = node.getAttribute("aria-label")?.trim();
-      if (imgAria) {
-        text += ` ${imgAria} `;
-        continue;
-      }
-      const alt = node.getAttribute("alt");
-      if (alt !== null) {
-        text += ` ${alt} `;
-        continue;
-      }
-      const imgTitle = node.getAttribute("title")?.trim();
-      if (imgTitle) text += ` ${imgTitle} `;
-      continue;
-    }
-    const ariaLabel = node.getAttribute("aria-label")?.trim();
-    if (ariaLabel) {
-      text += ` ${ariaLabel} `;
-      continue;
-    }
-    const fromSubtree = textFromNodes(node.shadowRoot ? node.shadowRoot.childNodes : node.childNodes, includeHidden);
-    if (fromSubtree.trim()) {
-      text += fromSubtree;
-      continue;
-    }
-    const title = node.getAttribute("title")?.trim();
-    if (title) text += ` ${title} `;
-  }
-  return text;
-}
-
-// src/engine/rules/wcag/1.1.1-svg-img-alt.js
-var svg_img_alt_default = {
-  id: "svg-img-alt",
-  name: "SVG accessible name",
-  impact: "serious",
-  tags: ["wcag2a", "wcag111"],
-  help: 'Inline SVG and role="img" graphics need an accessible name',
-  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/non-text-content.html",
-  // <img> itself is handled by image-alt; this covers SVG (with or without a
-  // role) and role="img" divs/spans. Top-level plain <svg> is included
-  // because browsers expose it to AT as a graphic even without a role.
-  selector: 'svg[role="img"], svg[role="graphics-document"], svg[role="graphics-symbol"], [role="img"]:not(img):not(svg), svg:not([role])',
-  evaluate(element, { accessibleName: accessibleName2 }) {
-    if (element.tagName.toLowerCase() !== "svg" && element.getAttribute("role") === "img") {
-      const authorName2 = labelledByName(element) || element.getAttribute("aria-label")?.trim() || element.getAttribute("title")?.trim();
-      if (authorName2) return { status: "pass" };
-      return {
-        status: "fail",
-        message: 'This element is marked as an image but has no accessible name \u2014 for role="img", content inside it (including an inner SVG\u2019s <title>) does not count as a name.',
-        fix: 'Add aria-label="\u2026" or aria-labelledby pointing at visible text.'
-      };
-    }
-    if (accessibleName2(element)) return { status: "pass" };
-    if (!element.getAttribute("role") && element.tagName.toLowerCase() === "svg") {
-      if (element.parentNode instanceof SVGElement) return { status: "pass" };
-      const control = element.closest('a[href], button, [role="button"], [role="link"]');
-      if (control && accessibleName2(control)) return { status: "pass" };
-      return {
-        status: "incomplete",
-        message: "This SVG has no accessible name and is not marked decorative \u2014 some screen readers announce it as an unlabeled graphic.",
-        fix: 'Add aria-hidden="true" if decorative; if meaningful, add role="img" and aria-label="\u2026" (or a <title> as the first child).'
-      };
-    }
-    return {
-      status: "fail",
-      message: "This element is marked as an image but has no accessible name.",
-      fix: 'Add aria-label="\u2026" (for SVG, a <title> as the first child also works).'
     };
   }
 };
@@ -718,7 +558,7 @@ function implicitRole(element) {
 }
 function presentationDiscarded(element) {
   if ([...GLOBAL_ARIA].some((name) => element.hasAttribute(`aria-${name}`))) return true;
-  if (element.matches(":disabled") || element.closest("[inert]")) return false;
+  if (element.matches(":disabled") || isInert(element)) return false;
   if (element.tabIndex >= 0) return true;
   return element.matches('a[href], button, input, select, textarea, summary, [contenteditable="true"]');
 }
@@ -726,14 +566,221 @@ function effectiveRole(element) {
   const explicit = element.getAttribute("role")?.trim().split(/\s+/) ?? [];
   for (const token of explicit) {
     const role = token.toLowerCase();
+    if (role === "image") return "img";
     if (!ROLE_ARIA[role]) continue;
     if ((role === "presentation" || role === "none") && presentationDiscarded(element)) {
       return implicitRole(element);
     }
     return role;
   }
-  return explicit.length ? null : implicitRole(element);
+  return implicitRole(element);
 }
+
+// src/engine/rules/wcag/1.1.1-image-alt.js
+var FILENAME_ALT = /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)([?#].*)?$/i;
+var GENERIC_ALT = /^(image|img|photo|photograph|picture|graphic|icon|untitled|placeholder|spacer|\d+)$/i;
+var image_alt_default = {
+  id: "image-alt",
+  name: "Image alt text",
+  impact: "critical",
+  tags: ["wcag2a", "wcag111"],
+  help: "Every <img> needs a text alternative",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/non-text-content.html",
+  selector: "img",
+  evaluate(element, { accessibleName: accessibleName2 }) {
+    const role = effectiveRole(element);
+    if (role === "presentation" || role === "none") return { status: "pass" };
+    if (element.hasAttribute("alt")) {
+      const alt = element.getAttribute("alt");
+      if (alt === "") return { status: "pass" };
+      if (!alt.trim()) {
+        return {
+          status: "incomplete",
+          message: `alt="${alt}" is only whitespace \u2014 not a description, and not the decorative marker either (that is alt="" with nothing between the quotes). Screen readers skip it today, so check the image is really decorative; if it carries meaning, describe it, and either way use alt="".`
+        };
+      }
+      const trimmed = alt.trim();
+      if (FILENAME_ALT.test(trimmed) || GENERIC_ALT.test(trimmed)) {
+        return {
+          status: "incomplete",
+          message: `alt="${trimmed}" looks like a file name or placeholder, not a description \u2014 screen-reader users learn nothing from it. If the image carries meaning, describe it; if not, use alt="".`
+        };
+      }
+      return { status: "pass" };
+    }
+    if (accessibleName2(element)) return { status: "pass" };
+    return {
+      status: "fail",
+      message: "This image has no alt attribute, so screen readers announce its file name or nothing at all.",
+      fix: `Describe the image: <img alt="\u2026" src="${element.getAttribute("src") ?? ""}">, or mark it decorative with alt="".`
+    };
+  }
+};
+
+// src/engine/lib/accessible-name.js
+var TEXT_INPUT = /* @__PURE__ */ new Set([
+  "text",
+  "search",
+  "url",
+  "tel",
+  "email",
+  "password",
+  "number",
+  "date",
+  "datetime-local",
+  "month",
+  "time",
+  "week",
+  ""
+]);
+var LABELABLE = /* @__PURE__ */ new Set(["input", "select", "textarea", "button", "meter", "output", "progress"]);
+function accessibleName(element) {
+  return computeName(element, false, false, /* @__PURE__ */ new Set());
+}
+function labelledByName(element) {
+  return referencedName(element, /* @__PURE__ */ new Set()) ?? "";
+}
+function nativeLabelName(element, label) {
+  return computeName(label, false, hiddenForName(label), /* @__PURE__ */ new Set([element]));
+}
+function hiddenForName(element) {
+  for (let node = element; node; node = flatTreeParent(node)) {
+    if (node.getAttribute?.("aria-hidden") === "true") return true;
+    const style = getComputedStyle(node);
+    if (style.display === "none") return true;
+  }
+  const visibility = getComputedStyle(element).visibility;
+  return visibility === "hidden" || visibility === "collapse";
+}
+function referencedName(element, visited) {
+  const refs = element.getAttribute?.("aria-labelledby");
+  if (!refs) return null;
+  const root = element.getRootNode();
+  const targets = refs.split(/\s+/).filter(Boolean).map((id) => root.getElementById?.(id)).filter(Boolean);
+  if (!targets.length) return null;
+  return targets.map((target) => {
+    const path = new Set(visited);
+    if (target === element) path.delete(element);
+    return computeName(target, true, hiddenForName(target), path);
+  }).join(" ").replace(/\s+/g, " ").trim();
+}
+function computeName(element, inLabelledBy, includeHidden, visited) {
+  if (visited.has(element)) return "";
+  visited.add(element);
+  if (!inLabelledBy) {
+    const fromLabelledBy = referencedName(element, visited);
+    if (fromLabelledBy) return fromLabelledBy;
+  }
+  const ariaLabel = element.getAttribute("aria-label")?.trim();
+  if (ariaLabel) return ariaLabel;
+  const tag = element.tagName.toLowerCase();
+  if (tag === "img" || tag === "area") {
+    const alt = element.getAttribute("alt")?.trim();
+    if (alt) return alt;
+  }
+  if (LABELABLE.has(tag) && element.labels?.length) {
+    const text = [...element.labels].map((label) => computeName(label, inLabelledBy, hiddenForName(label), visited)).join(" ").trim();
+    if (text) return text;
+  }
+  if (tag === "input" || tag === "select" || tag === "textarea") {
+    if (element.type === "submit" || element.type === "reset" || element.type === "button") {
+      const value = (element.value ?? element.getAttribute("value") ?? "").trim();
+      if (value) return value;
+    }
+    if (element.type === "image") {
+      const alt = element.getAttribute("alt")?.trim();
+      if (alt) return alt;
+    }
+    if (inLabelledBy && (tag === "textarea" || TEXT_INPUT.has(element.type))) {
+      const value = (element.value ?? "").trim();
+      if (value) return value;
+    }
+    if (element.type === "submit") return "Submit";
+    if (element.type === "reset") return "Reset";
+  }
+  const fromContents = visibleContentText(element, includeHidden, inLabelledBy, visited).replace(/\s+/g, " ").trim();
+  if (fromContents) return fromContents;
+  return (element.getAttribute("title") ?? element.getAttribute("placeholder") ?? "").trim();
+}
+function visibleContentText(element, includeHidden, inLabelledBy, visited) {
+  const nodes = element.shadowRoot ? element.shadowRoot.childNodes : element.childNodes;
+  return generatedContent(element, "::before", includeHidden) + textFromNodes(nodes, includeHidden, inLabelledBy, visited) + generatedContent(element, "::after", includeHidden);
+}
+function generatedContent(element, pseudo, includeHidden) {
+  const style = getComputedStyle(element, pseudo);
+  if (!includeHidden && (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse")) return "";
+  const content = style.content;
+  if (!content || content === "none" || content === "normal") return "";
+  const alt = content.match(/\/\s*"((?:[^"\\]|\\.)*)"\s*$/);
+  if (alt) return alt[1].replace(/\\(.)/g, "$1");
+  const match = content.match(/^"((?:[^"\\]|\\.)*)"$/);
+  return match ? match[1].replace(/\\(.)/g, "$1") : "";
+}
+function textFromNodes(nodes, includeHidden, inLabelledBy, visited) {
+  let text = "";
+  for (const node of nodes) {
+    if (node.nodeType === 3) {
+      text += node.textContent;
+      continue;
+    }
+    if (node.nodeType !== 1) continue;
+    const tag = node.tagName.toLowerCase();
+    if (tag === "script" || tag === "style" || tag === "noscript" || tag === "template") continue;
+    if (!includeHidden) {
+      if (node.getAttribute("aria-hidden") === "true") continue;
+      const style = getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") continue;
+    }
+    if (tag === "slot") {
+      const assigned = node.assignedNodes?.() ?? [];
+      text += textFromNodes(assigned.length ? assigned : node.childNodes, includeHidden, inLabelledBy, visited);
+      continue;
+    }
+    if ((tag === "img" || tag === "area") && node.getAttribute("alt") === "" && !node.getAttribute("aria-label")?.trim() && !node.getAttribute("aria-labelledby")) continue;
+    const childName = computeName(node, inLabelledBy, includeHidden, visited);
+    text += tag === "img" || tag === "area" || node.hasAttribute("aria-label") || node.hasAttribute("aria-labelledby") ? ` ${childName} ` : childName;
+  }
+  return text;
+}
+
+// src/engine/rules/wcag/1.1.1-svg-img-alt.js
+var svg_img_alt_default = {
+  id: "svg-img-alt",
+  name: "SVG accessible name",
+  impact: "serious",
+  tags: ["wcag2a", "wcag111"],
+  help: 'Inline SVG and role="img" graphics need an accessible name',
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/non-text-content.html",
+  // <img> itself is handled by image-alt; this covers SVG (with or without a
+  // role) and role="img" divs/spans. Top-level plain <svg> is included
+  // because browsers expose it to AT as a graphic even without a role.
+  selector: "svg, [role]",
+  evaluate(element, { accessibleName: accessibleName2 }) {
+    if (element.tagName === "IMG") return { status: "pass" };
+    const svg = element.tagName.toLowerCase() === "svg";
+    const explicitGraphic = effectiveRole(element) === "img" || ["graphics-document", "graphics-symbol"].includes(element.getAttribute("role")?.trim());
+    if (!svg && !explicitGraphic) return { status: "pass" };
+    if (svg && element.hasAttribute("role") && !explicitGraphic) return { status: "pass" };
+    const nativeTitle = svg && [...element.children].find((child) => child.tagName.toLowerCase() === "title");
+    const name = labelledByName(element) || element.getAttribute("aria-label")?.trim() || nativeTitle && accessibleName2(nativeTitle) || element.getAttribute("title")?.trim();
+    if (name) return { status: "pass" };
+    if (!element.getAttribute("role") && element.tagName.toLowerCase() === "svg") {
+      if (element.parentNode instanceof SVGElement) return { status: "pass" };
+      const control = element.closest('a[href], button, [role="button"], [role="link"]');
+      if (control && accessibleName2(control)) return { status: "pass" };
+      return {
+        status: "incomplete",
+        message: "This SVG has no accessible name and is not marked decorative \u2014 some screen readers announce it as an unlabeled graphic.",
+        fix: 'Add aria-hidden="true" if decorative; if meaningful, add role="img" and aria-label="\u2026" (or a <title> as the first child).'
+      };
+    }
+    return {
+      status: "fail",
+      message: "This element is marked as an image but has no accessible name.",
+      fix: 'Add aria-label="\u2026" (for SVG, a <title> as the first child also works).'
+    };
+  }
+};
 
 // src/engine/rules/wcag/4.1.2-button-name.js
 var button_name_default = {
@@ -743,7 +790,7 @@ var button_name_default = {
   tags: ["wcag2a", "wcag412"],
   help: "Buttons must have an accessible name",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
-  selector: 'button, [role="button"], input[type="button"], input[type="submit"], input[type="reset"]',
+  selector: 'button, [role], input[type="button"], input[type="submit"], input[type="reset"]',
   evaluate(element, { accessibleName: accessibleName2 }) {
     const role = effectiveRole(element) ?? implicitRole(element);
     if (role !== "button") return { status: "pass" };
@@ -866,6 +913,7 @@ function createLinkPurposeRule({ id, impact, tags, help, helpUrl, verdict }) {
     // link-name's finding, not this one.
     selector: 'a[href], [role="link"]',
     evaluate(element, { accessibleName: accessibleName2 }) {
+      if ((effectiveRole(element) ?? implicitRole(element)) !== "link") return { status: "pass" };
       const name = accessibleName2(element);
       if (!name) return { status: "pass" };
       const normalized = normalizeName(name);
@@ -910,8 +958,8 @@ var link_text_generic_only_default = createLinkPurposeRule({
       fix: 'If the name really is generic here, put the destination in the link text, e.g. "Read more about the 2026 budget".'
     };
     return {
-      status: "fail",
-      message: `\u201C${name}\u201D gives no purpose on its own. 2.4.9 asks that the link text alone identify where a link goes, without relying on the sentence or heading around it, so anyone reading the page's links as a list can tell them apart.`,
+      status: "incomplete",
+      message: `\u201C${name}\u201D appears generic when read alone. Check whether it identifies the destination in this context or whether a mechanism makes the link text descriptive. 2.4.9 permits such a mechanism; the initial link name alone cannot establish a failure.`,
       fix: 'Name the destination in the link text, e.g. "Read more about the 2026 budget".'
     };
   }
@@ -934,19 +982,7 @@ var form_label_default = {
       const style = getComputedStyle(label);
       return style.display !== "none" && style.visibility !== "hidden";
     });
-    const accessibleText = (node) => {
-      if (node.nodeType === Node.TEXT_NODE) return node.textContent;
-      if (node.nodeType !== Node.ELEMENT_NODE) return "";
-      if (node.getAttribute("aria-hidden") === "true") return "";
-      const nodeStyle = getComputedStyle(node);
-      if (nodeStyle.display === "none" || nodeStyle.visibility === "hidden") return "";
-      const aria = node.getAttribute("aria-label");
-      if (aria?.trim()) return aria;
-      const alt = node.tagName === "IMG" || node.tagName === "AREA" ? node.getAttribute("alt") : null;
-      if (alt?.trim()) return alt;
-      return [...node.childNodes].map(accessibleText).join(" ");
-    };
-    const labelsText = visibleLabels.map(accessibleText).join(" ").trim();
+    const labelsText = visibleLabels.map((label) => nativeLabelName(element, label)).join(" ").trim();
     const ariaLabel = element.getAttribute("aria-label")?.trim();
     const labelledby = labelledByName(element);
     if (labelsText || ariaLabel || labelledby) return { status: "pass" };
@@ -1138,19 +1174,21 @@ var autocomplete_valid_default = {
     if (element.getAttribute("aria-disabled") === "true") return { status: "pass" };
     const tokens = element.getAttribute("autocomplete").trim().toLowerCase().split(/\s+/).filter(Boolean);
     const invalid = tokens.filter((token) => !isKnown(token));
-    if (invalid.length) {
+    const fault = invalid.length ? null : tokens.length ? grammarFault(tokens) : null;
+    if (!invalid.length && !fault) return { status: "pass" };
+    const problem = invalid.length ? `autocomplete contains unknown token(s): ${invalid.join(", ")}, so browsers and assistive tools cannot identify this field's purpose from it` : `autocomplete="${element.getAttribute("autocomplete").trim()}" is not a valid autofill value: ${fault}. Browsers discard the whole value, so no purpose is exposed`;
+    const fix = invalid.length ? 'Use tokens from the HTML input-purposes list, e.g. autocomplete="email" or autocomplete="given-name".' : 'Use one field name from the HTML autofill list, optionally preceded by section-*, then shipping or billing, and (for tel, email and impp only) a contact type, e.g. autocomplete="shipping tel" or autocomplete="home email".';
+    if (element.type === "search") {
       return {
-        status: "fail",
-        message: `autocomplete contains unknown token(s): ${invalid.join(", ")} \u2014 browsers and assistive tools can't identify this field's purpose.`,
-        fix: 'Use tokens from the HTML input-purposes list, e.g. autocomplete="email" or autocomplete="given-name".'
+        status: "incomplete",
+        message: `${problem}. 1.3.5 covers fields that collect information about the user, which a search box usually does not; if this one does, correct the value.`,
+        fix
       };
     }
-    const fault = tokens.length ? grammarFault(tokens) : null;
-    if (!fault) return { status: "pass" };
     return {
       status: "fail",
-      message: `autocomplete="${element.getAttribute("autocomplete").trim()}" is not a valid autofill value: ${fault}. Browsers discard the whole value, so no purpose is exposed.`,
-      fix: 'Use one field name from the HTML autofill list, optionally preceded by section-*, then shipping or billing, and (for tel, email and impp only) a contact type, e.g. autocomplete="shipping tel" or autocomplete="home email".'
+      message: `${problem}. 1.3.5 covers fields that collect information about the user, which is what an autocomplete attribute is for; if this field collects nothing about the user, the criterion does not apply and this finding can be dismissed.`,
+      fix
     };
   }
 };
@@ -1158,37 +1196,79 @@ var autocomplete_valid_default = {
 // src/engine/rules/wcag/1.3.4-orientation.js
 var ROOT_PART = /^(html|body|:root)((?::[a-z-]+(?:\([^()]*\))?)*)$/i;
 var LOCK_ROTATE = /rotate(?:3d\([^)]*,\s*)?\(?\s*(?:-?(?:90|270)deg|0\.25turn|-0\.25turn|100grad|-100grad)/i;
-function rootSelector(selectorText, doc) {
-  return (selectorText ?? "").split(",").some((part) => {
+function matchingRoots(selectorText, doc) {
+  const roots = /* @__PURE__ */ new Set();
+  for (const part of (selectorText ?? "").split(",")) {
     const match = ROOT_PART.exec(part.trim());
-    if (!match) return false;
-    if (!match[2]) return true;
+    if (!match) continue;
     const root = /^body$/i.test(match[1]) ? doc.body : doc.documentElement;
     try {
-      return !!root && root.matches(part.trim());
+      if (root?.matches(part.trim())) roots.add(root);
     } catch {
-      return false;
     }
-  });
+  }
+  return [...roots];
 }
-function scanRules(rules, insideOrientation, findings, doc) {
+function quarterTurn(style, win) {
+  let angle = 0;
+  if (style.transform && style.transform !== "none") {
+    try {
+      const matrix = new win.DOMMatrixReadOnly(style.transform);
+      if (!matrix.is2D) return null;
+      angle += Math.atan2(matrix.b, matrix.a) * 180 / Math.PI;
+    } catch {
+      return null;
+    }
+  }
+  if (style.rotate && style.rotate !== "none") {
+    const rotation = /^(?:(?:z|0\s+0\s+1)\s+)?(-?[\d.]+)(deg|rad|grad|turn)$/.exec(style.rotate);
+    if (!rotation) return null;
+    const scale = { deg: 1, rad: 180 / Math.PI, grad: 0.9, turn: 360 }[rotation[2]];
+    angle += Number(rotation[1]) * scale;
+  }
+  return Math.abs((angle % 180 + 180) % 180 - 90) < 0.01;
+}
+function scanRules(rules, orientationContext, active, state, doc) {
+  const win = doc.defaultView;
   for (const rule of rules ?? []) {
-    const condition = rule.conditionText ?? rule.media?.mediaText;
-    if (condition !== void 0 && rule.cssRules) {
-      const orientation = /orientation\s*:\s*(portrait|landscape)/i.exec(condition)?.[1];
-      scanRules(rule.cssRules, orientation ? { condition, orientation } : insideOrientation, findings, doc);
+    if (rule.type === win.CSSRule.SUPPORTS_RULE) {
+      if (win.CSS.supports(rule.conditionText)) scanRules(rule.cssRules, orientationContext, active, state, doc);
       continue;
     }
-    if (insideOrientation && rule.style && rootSelector(rule.selectorText, doc)) {
-      const { display, visibility, transform, rotate } = rule.style;
-      if (display === "none" || visibility === "hidden") {
-        findings.push({ kind: "hidden", selector: rule.selectorText, ...insideOrientation });
-      } else if (LOCK_ROTATE.test(transform ?? "") || LOCK_ROTATE.test(rotate ?? "")) {
-        findings.push({ kind: "rotated", selector: rule.selectorText, ...insideOrientation });
-      }
-    } else if (rule.cssRules) {
-      scanRules(rule.cssRules, insideOrientation, findings);
+    if (rule.type === win.CSSRule.MEDIA_RULE) {
+      const condition = rule.conditionText ?? rule.media.mediaText;
+      const orientation = /orientation\s*:\s*(portrait|landscape)/i.exec(condition)?.[1];
+      const context = orientation ? { condition, orientation } : orientationContext;
+      scanRules(rule.cssRules, context, active && win.matchMedia(condition).matches, state, doc);
+      continue;
     }
+    if (orientationContext && rule.style) {
+      const { display, visibility, transform, rotate } = rule.style;
+      const declared = {
+        display: display ? display === "none" ? "hidden" : null : void 0,
+        visibility: visibility ? visibility === "hidden" ? "hidden" : null : void 0,
+        transform: transform ? LOCK_ROTATE.test(transform) ? "rotated" : null : void 0,
+        rotate: rotate ? LOCK_ROTATE.test(`rotate(${rotate})`) ? "rotated" : null : void 0
+      };
+      if (Object.values(declared).some((value) => value !== void 0)) {
+        for (const root of matchingRoots(rule.selectorText, doc)) {
+          const key = `${orientationContext.orientation.toLowerCase()}|${root === doc.body ? "body" : "html"}`;
+          if (!state.has(key)) state.set(key, {});
+          const entry = state.get(key);
+          for (const [property, kind] of Object.entries(declared)) {
+            if (kind === void 0) continue;
+            entry[property] = kind ? { kind, active, selector: rule.selectorText, ...orientationContext } : null;
+          }
+        }
+      }
+    }
+    if (rule.cssRules) scanRules(
+      rule.cssRules,
+      orientationContext,
+      active && rule.conditionText === void 0,
+      state,
+      doc
+    );
   }
 }
 var orientation_default = {
@@ -1199,28 +1279,44 @@ var orientation_default = {
   help: "Content must work in both portrait and landscape",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/orientation.html",
   selector: "html",
-  // The evidence is in the stylesheet, not in the root's own rendering — and
-  // the lock hides the root exactly when it is in force, so a visibility
-  // filter here would silence the rule in the only state that matters.
   visibleOnly: false,
+  // a restriction can hide the root itself
   evaluate(element) {
-    const findings = [];
-    for (const sheet of element.ownerDocument.styleSheets) {
+    const doc = element.ownerDocument;
+    const win = doc.defaultView;
+    const state = /* @__PURE__ */ new Map();
+    for (const sheet of doc.styleSheets) {
+      if (sheet.disabled) continue;
+      const media = sheet.media?.mediaText;
+      if (media && !win.matchMedia(media).matches) continue;
       let rules;
       try {
         rules = sheet.cssRules;
       } catch {
         continue;
       }
-      scanRules(rules, null, findings, element.ownerDocument);
+      scanRules(rules, null, true, state, doc);
+    }
+    const findings = [];
+    for (const [key, entry] of state) {
+      const root = key.endsWith("|body") ? doc.body : doc.documentElement;
+      for (const finding2 of Object.values(entry)) {
+        if (!finding2) continue;
+        if (finding2.active) {
+          const computed = win.getComputedStyle(root);
+          const effective = finding2.kind === "hidden" ? computed.display === "none" || computed.visibility === "hidden" : quarterTurn(computed, win);
+          if (effective === false) continue;
+        }
+        findings.push(finding2);
+      }
     }
     if (!findings.length) return { status: "pass" };
-    const f = findings[0];
-    const verb = f.kind === "hidden" ? "hides the page" : "rotates the page to force the other orientation";
+    const finding = findings.find((candidate) => candidate.active) ?? findings[0];
+    const verb = finding.kind === "hidden" ? "hides the page" : "rotates the page to force the other orientation";
     return {
       status: "fail",
-      message: `A stylesheet rule (${f.selector} under @media ${f.condition}) ${verb} when the device is in ${f.orientation} \u2014 the content is locked to a single display orientation.`,
-      fix: "Let the layout adapt to both orientations instead of hiding or rotating the page. If a single orientation is genuinely essential (rare), document why."
+      message: `A stylesheet rule (${finding.selector} under @media ${finding.condition}) ${verb} when the device is in ${finding.orientation}${finding.active ? ", and it is in effect now" : ""}: the content is locked to a single display orientation. 1.3.4 allows that only where one orientation is essential, which a stylesheet cannot show; this finding assumes it is not.`,
+      fix: "Let the layout adapt to both orientations instead of hiding or rotating the page. If a single orientation is genuinely essential (rare), document why and dismiss this finding."
     };
   }
 };
@@ -1244,8 +1340,8 @@ var meta_viewport_default = {
     if (!disablesZoom && !cappedZoom) return { status: "pass" };
     return {
       status: "fail",
-      message: "This viewport meta tag stops low-vision users from zooming the page.",
-      fix: "Remove user-scalable=no and any maximum-scale below 2 from the viewport meta tag."
+      message: "This viewport meta tag stops users zooming the page, so text cannot be enlarged with the browser. 1.4.4 is met only if the page provides its own control that enlarges all text to 200% (technique G178); this finding assumes it does not, since the tag cannot show it.",
+      fix: "Remove user-scalable=no and any maximum-scale below 2 from the viewport meta tag. If the page has its own text-size control that reaches 200%, record that and dismiss this finding."
     };
   }
 };
@@ -1329,7 +1425,65 @@ var panelRectsCache = null;
 var pseudoCache = /* @__PURE__ */ new WeakMap();
 var zeroClipCache = /* @__PURE__ */ new WeakMap();
 var firstLineRulesCache = /* @__PURE__ */ new WeakMap();
+var chainEffectCache = /* @__PURE__ */ new WeakMap();
+var uncoveredEffectCache = /* @__PURE__ */ new WeakMap();
+var blendBackdropCache = /* @__PURE__ */ new WeakMap();
 var HAS_IMAGE = Symbol("background-image in chain");
+var flatParentOf = (node) => node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host ?? null;
+function colourChangingFilter(filter) {
+  if (!filter || filter === "none") return false;
+  let depth = 0;
+  let name = "";
+  for (const ch of filter) {
+    if (ch === "(") {
+      if (depth === 0 && name && name !== "drop-shadow") return true;
+      depth += 1;
+      name = "";
+    } else if (ch === ")") {
+      depth -= 1;
+    } else if (depth === 0) {
+      name = /[a-z-]/i.test(ch) ? name + ch.toLowerCase() : "";
+    }
+  }
+  return false;
+}
+function chainEffect(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (chainEffectCache.has(node)) return chainEffectCache.get(node);
+  const style = getComputedStyle(node);
+  const own = colourChangingFilter(style.filter) || style.mixBlendMode && style.mixBlendMode !== "normal";
+  const result = Boolean(own || chainEffect(flatParentOf(node)));
+  chainEffectCache.set(node, result);
+  return result;
+}
+function uncoveredEffect(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (uncoveredEffectCache.has(node)) return uncoveredEffectCache.get(node);
+  const style = getComputedStyle(node);
+  let result;
+  if ((parseColor(style.backgroundColor)?.a ?? 0) >= 1) result = false;
+  else if (style.backdropFilter && style.backdropFilter !== "none" || style.filter && style.filter !== "none") result = true;
+  else result = uncoveredEffect(flatParentOf(node));
+  uncoveredEffectCache.set(node, result);
+  return result;
+}
+function hasPaintEffects(element) {
+  if (!element || element.nodeType !== 1) return false;
+  return chainEffect(element) || uncoveredEffect(element);
+}
+function isolatedBlendBackdrop(element) {
+  if (!element || element.nodeType !== 1) return false;
+  if (blendBackdropCache.has(element)) return blendBackdropCache.get(element);
+  const style = getComputedStyle(element);
+  const background = parseColor(style.backgroundColor);
+  let result = false;
+  if (!background || background.a < 1) {
+    const isolated = style.isolation === "isolate" || ["fixed", "sticky"].includes(style.position) || style.zIndex !== "auto" || ["transform", "perspective", "filter", "backdropFilter", "clipPath", "maskImage", "webkitMaskImage"].some((key) => style[key] && style[key] !== "none") || /(?:paint|layout|strict|content)/.test(style.contain) || style.willChange && style.willChange !== "auto" || parseFloat(style.opacity) < 1;
+    result = isolated || isolatedBlendBackdrop(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host);
+  }
+  blendBackdropCache.set(element, result);
+  return result;
+}
 function inZeroClipSubtree(element) {
   for (let a = element; a; a = a.parentElement) {
     let hidden = zeroClipCache.get(a);
@@ -1918,11 +2072,12 @@ function sampleGridFor(extent) {
   const height = axis(extent.height);
   return { width, height, reduced: extent.width / width > 4.5 || extent.height / height > 4.5 };
 }
-function imageLuminanceRange(url, overlays = [], grid = null) {
+function imageLuminanceRange(url, overlays = [], grid = null, under = null) {
   const width = grid?.width ?? 32;
   const height = grid?.height ?? 32;
   const sizeKey = width === 32 && height === 32 ? "" : `|${width}x${height}`;
-  const cacheKey = `${url}${overlays.length ? `|${overlayKey(overlays)}` : ""}${sizeKey}`;
+  const backdrop = under?.a >= 1 ? under : null;
+  const cacheKey = `${url}${overlays.length ? `|${overlayKey(overlays)}` : ""}${sizeKey}${backdrop ? `|under:${overlayKey([backdrop])}` : ""}`;
   if (imageRangeCache.has(cacheKey)) return imageRangeCache.get(cacheKey);
   const promise = new Promise((resolve) => {
     const img = new Image();
@@ -1937,18 +2092,19 @@ function imageLuminanceRange(url, overlays = [], grid = null) {
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         ctx.drawImage(img, 0, 0, width, height);
         const data = ctx.getImageData(0, 0, width, height).data;
-        let min = 1;
-        let max = 0;
+        let min = Infinity;
+        let max = -Infinity;
         let minColor = null;
         let maxColor = null;
         let opaquePixels = 0;
         let alphaSeen = false;
         for (let i = 0; i < data.length; i += 4) {
-          if (data[i + 3] < 255) alphaSeen = true;
-          if (data[i + 3] < 128) continue;
-          opaquePixels += 1;
-          const pixel = { r: data[i], g: data[i + 1], b: data[i + 2], a: 1 };
-          const shown = overlays.length ? applyOverlays(pixel, overlays) : pixel;
+          if (data[i + 3] < 255 && !backdrop) alphaSeen = true;
+          if (data[i + 3] > 0) opaquePixels += 1;
+          if (data[i + 3] === 0 && !backdrop) continue;
+          const pixel = { r: data[i], g: data[i + 1], b: data[i + 2], a: data[i + 3] / 255 };
+          const painted = backdrop ? composite(pixel, backdrop) : { ...pixel, a: 1 };
+          const shown = overlays.length ? applyOverlays(painted, overlays) : painted;
           const l = luminance(shown);
           if (l < min) {
             min = l;
@@ -2407,7 +2563,7 @@ async function sampledVerdict(source, foreground, required, doc, overlays = [], 
   let what = "image";
   const grid = sampleGridFor(extent);
   if (source.tagName === "IMG") {
-    range = await imageLuminanceRange(source.currentSrc || source.src, overlays, grid);
+    range = await imageLuminanceRange(source.currentSrc || source.src, overlays, grid, under);
   } else {
     const css = source.css ?? getComputedStyle(source).backgroundImage;
     if (!css || css === "none") return null;
@@ -2422,7 +2578,7 @@ async function sampledVerdict(source, foreground, required, doc, overlays = [], 
       } catch {
         return null;
       }
-      range = await imageLuminanceRange(absolute, overlays, grid);
+      range = await imageLuminanceRange(absolute, overlays, grid, under);
     } else if (layer.includes("gradient(")) {
       what = "gradient";
       const stops = gradientStops(layer);
@@ -2556,6 +2712,9 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
       const fill = parseColor(style.webkitTextFillColor);
       const clipsText = /\btext\b/.test(style.webkitBackgroundClip ?? "") || /\btext\b/.test(style.backgroundClip ?? "");
       if (clipsText) {
+        if (hasPaintEffects(styleSource)) {
+          return { status: "incomplete", message: "A filter or blend mode changes the colours presented by this text and its background. Check the resulting contrast by eye." };
+        }
         const behind = effectiveBackground(element.parentElement ?? element);
         const fgRange = style.backgroundImage !== "none" ? sampledGradientRange(splitBackgroundLayers(style.backgroundImage)[0] ?? "") : null;
         if (fgRange && behind) {
@@ -2572,6 +2731,16 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
       }
       let foreground = fill && style.webkitTextFillColor !== style.color ? fill : parseColor(style.color);
       if (textVisuallyHidden(element, style, foreground)) return { status: "pass" };
+      const ownMultiply = style.mixBlendMode === "multiply" && styleSource === element && !element.children.length && !element.shadowRoot && parseColor(style.backgroundColor)?.a === 0 && style.backgroundImage === "none" && style.filter === "none" && (!style.backdropFilter || style.backdropFilter === "none") && (!style.textShadow || style.textShadow === "none") && !hasPaintEffects(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host) && !isolatedBlendBackdrop(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host) && !["::before", "::after"].some((pseudo) => {
+        const pseudoStyle = getComputedStyle(element, pseudo);
+        const content = pseudoStyle.content;
+        const bareJoiner = (content === '"\u2060"' || content === "'\u2060'") && pseudoStyle.display === "inline" && pseudoStyle.position === "static" && pseudoStyle.cssFloat === "none" && parseColor(pseudoStyle.backgroundColor)?.a === 0 && ["backgroundImage", "boxShadow", "textShadow", "transform", "filter", "backdropFilter", "maskImage", "webkitMaskImage"].every((key) => !pseudoStyle[key] || pseudoStyle[key] === "none") && ["Top", "Right", "Bottom", "Left"].every((side) => parseFloat(pseudoStyle[`padding${side}`]) === 0 && parseFloat(pseudoStyle[`border${side}Width`]) === 0) && pseudoStyle.outlineStyle === "none" && (!pseudoStyle.mixBlendMode || pseudoStyle.mixBlendMode === "normal");
+        if (bareJoiner) return false;
+        return content && content !== "none" && content !== "normal" && content !== '""';
+      });
+      if (hasPaintEffects(styleSource) && !ownMultiply) {
+        return { status: "incomplete", message: "A filter or blend mode changes the colours presented by this text and its background. Check the resulting contrast by eye." };
+      }
       if (!foreground) {
         return { status: "incomplete", message: "The text colour could not be parsed \u2014 check contrast by eye." };
       }
@@ -2585,6 +2754,20 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
         color,
         required: isLargeText(pseudoStyle) ? thresholds.large : thresholds.normal
       }));
+      let basePaints = true;
+      if (!element.childElementCount && alternates.some((a) => a.origin === "::first-line")) {
+        const range = doc.createRange();
+        range.selectNodeContents(element);
+        const lines = [...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0);
+        if (lines.length && lines.every((r) => Math.abs(r.top - lines[0].top) < 1)) {
+          const generated = ["::before", "::after"].some((pseudo) => {
+            const generatedStyle = getComputedStyle(element, pseudo);
+            return generatedStyle.display !== "none" && !["none", "normal"].includes(generatedStyle.content);
+          });
+          if (generated) return { status: "incomplete", message: "Generated content may occupy this element\u2019s first line, so the colours that actually paint its text cannot be identified from text ranges alone. Check contrast by eye." };
+          basePaints = false;
+        }
+      }
       const worstCandidate = (candidates, backdrop) => candidates.reduce((worst, candidate) => {
         const shown = candidate.color.a < 1 ? composite(candidate.color, backdrop) : candidate.color;
         const margin = contrastRatio(shown, backdrop) / candidate.required;
@@ -2592,13 +2775,16 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
       }, null);
       if (alternates.length) {
         const estimate = effectiveBackground(styleSource) ?? { r: 255, g: 255, b: 255, a: 1 };
-        const pick = worstCandidate([{ origin: null, color: foreground, required }, ...alternates], estimate);
+        const pick = worstCandidate([...basePaints ? [{ origin: null, color: foreground, required }] : [], ...alternates], estimate);
         foreground = pick.color;
         required = pick.required;
         foregroundOrigin = pick.origin;
       }
       const opacity = opacityAnimating(element) ? restingOpacity(element) : cumulativeOpacity(element);
       if (opacity < 0.05) return { status: "pass" };
+      if (ownMultiply && (opacity < 1 || alternates.length)) {
+        return { status: "incomplete", message: "This text blends as a group or uses additional text paint. Check its presented contrast by eye." };
+      }
       if (opacity < 1) {
         const groupEligible = (!style.textShadow || style.textShadow === "none") && !(pseudoBackdropForText(element)?.film > 0);
         const group = groupEligible ? opacityGroupPaint(element, foreground) : null;
@@ -2658,6 +2844,7 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
       }
       const imageSource = backgroundImageSource(element);
       if (imageSource) {
+        if (ownMultiply) return { status: "incomplete", message: "This text multiplies against an image or gradient. Its contrast depends on the pixels behind each glyph; check it by eye." };
         const { relation, intrinsic, dimensionless, isGradient, sizedSmall, paint } = await imageVsText(imageSource, element, doc);
         if (relation !== "clear") {
           const carrierBox = imageSource.element.getBoundingClientRect();
@@ -2697,6 +2884,9 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
       }
       let background = effectiveBackground(styleSource);
       const painted = paintedBackdrop(element);
+      if (ownMultiply && painted?.image) {
+        return { status: "incomplete", message: "This text multiplies against image paint. Check its presented contrast by eye." };
+      }
       let veilPaint = null;
       let scrimLayers = painted?.scrim ?? null;
       if (!scrimLayers && painted === "offscreen") {
@@ -2708,6 +2898,9 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
         if (!veilPaint) return veiledIncomplete();
       }
       const pseudoResolved = pseudoBackdropForText(element);
+      if (ownMultiply && pseudoResolved) {
+        return { status: "incomplete", message: "Pseudo-element paint affects the backdrop of this blended text. Check its presented contrast by eye." };
+      }
       const film = pseudoResolved?.film ?? 0;
       let pseudoBack = pseudoResolved?.color || pseudoResolved?.image ? pseudoResolved : null;
       let pseudoIconScale = false;
@@ -2829,10 +3022,18 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
       if (alternates.length) {
         const dim = (color) => opacity < 1 ? { ...color, a: color.a * opacity } : color;
         const base = { origin: null, color: dim(baseForeground), required: baseRequired };
-        const pick = worstCandidate([base, ...alternates.map((a) => ({ ...a, color: dim(a.color) }))], background);
+        const pick = worstCandidate([...basePaints ? [base] : [], ...alternates.map((a) => ({ ...a, color: dim(a.color) }))], background);
         foreground = pick.color;
         required = pick.required;
         foregroundOrigin = pick.origin;
+      }
+      if (ownMultiply) {
+        foreground = {
+          ...foreground,
+          r: foreground.r * background.r / 255,
+          g: foreground.g * background.g / 255,
+          b: foreground.b * background.b / 255
+        };
       }
       if (foreground.a < 1) foreground = composite(foreground, background);
       const backdropHazard = (direction, blindOnly) => {
@@ -2847,7 +3048,7 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
             message: "This text overlaps an image or video, so its real background can\u2019t be computed \u2014 contrast must be checked by eye."
           };
         }
-        const flipping = opaquePanelRects(doc).some(({ element: panel, rect: rect2, color, hitTestBlind }) => (!blindOnly || hitTestBlind) && near(rect2) && !panel.contains(element) && !element.contains(panel) && textIntersects(element, rect2) && contrastRatio(foreground, color) >= required !== (direction === "pass"));
+        const flipping = opaquePanelRects(doc).some(({ element: panel, rect: rect2, color, hitTestBlind }) => (!blindOnly || hitTestBlind) && near(rect2) && !panel.contains(element) && !element.contains(panel) && textIntersects(element, rect2) && (ownMultiply || contrastRatio(foreground, color) >= required !== (direction === "pass")));
         if (flipping) {
           return {
             status: "incomplete",
@@ -2876,7 +3077,7 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
                 if (!paint || paint.a < 1) continue;
                 const siblingRect = sibling.getBoundingClientRect();
                 if (siblingRect.width < 24 || siblingRect.height < 12 || !near(siblingRect) || !textIntersects(element, siblingRect)) continue;
-                if (contrastRatio(foreground, paint) >= required !== (direction === "pass")) {
+                if (ownMultiply || contrastRatio(foreground, paint) >= required !== (direction === "pass")) {
                   return {
                     status: "incomplete",
                     message: "This text is positioned over a coloured box that isn\u2019t its DOM ancestor, so its real background is ambiguous \u2014 check contrast by eye."
@@ -3094,6 +3295,7 @@ function inspect(element) {
   const missing = [];
   const ambiguous = [];
   for (const attr of REF_ATTRIBUTES) {
+    if (attr === "aria-errormessage" && (!element.hasAttribute("aria-invalid") || ["false", ""].includes(element.getAttribute("aria-invalid").trim().toLowerCase()))) continue;
     for (const id of (element.getAttribute(attr) ?? "").split(/\s+/).filter(Boolean)) {
       if (!root.getElementById?.(id)) {
         if (attr === "aria-controls" && collapsed) continue;
@@ -3115,7 +3317,7 @@ function outcome({ missing, ambiguous }, element, accessibleName2) {
     const relevant = missing.filter(({ attr }) => !(attr === "aria-labelledby" && restingName));
     if (!relevant.length) return { status: "pass" };
     const line = ({ attr, id }) => attr === "aria-labelledby" ? `aria-labelledby="${id}" points to nothing and leaves this element without an accessible name` : `${attr}="${id}" points to nothing \u2014 assistive technology silently ignores it`;
-    const asserted = relevant.filter(({ attr }) => attr !== "aria-describedby" && (attr !== "aria-labelledby" || component));
+    const asserted = relevant.filter(({ attr }) => component && (attr === "aria-labelledby" || attr === "aria-activedescendant"));
     if (asserted.length) {
       return {
         status: "fail",
@@ -3313,7 +3515,8 @@ var valid_role_default = {
       (attr) => attr.name.startsWith("aria-") && attr.name !== "aria-hidden"
     );
     if (genericFallback && !focusable && !hasAriaProps) return { status: "pass" };
-    if (!focusable && !hasAriaProps) {
+    const nativeRole = implicitRole(element);
+    if (!focusable && !hasAriaProps || nativeRole && nativeRole !== "generic") {
       return {
         status: "incomplete",
         message: `role="${element.getAttribute("role")}" is not a valid ARIA role${hint}, so assistive technology ignores it and exposes the element's native <${tag}> semantics. Nothing is announced wrongly, but the author reached for a role that does not exist. Is the native <${tag}> role the right one here? If a different role was intended, that role is missing.`,
@@ -3377,12 +3580,12 @@ var list_structure_default = {
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/info-and-relationships.html",
   selector: "ul, ol",
   evaluate(element, { isRendered: isRendered2 }) {
-    if (element.hasAttribute("role") && element.getAttribute("role") !== "list") return { status: "pass" };
+    if (effectiveRole(element) !== "list") return { status: "pass" };
     const effectiveChildren = (parent) => [...parent.children].flatMap((child) => child.tagName === "SLOT" ? child.assignedElements?.().length ? child.assignedElements() : [...child.children] : [child]);
     const isValidChild = (child) => {
       if (NEVER_RENDERED.has(child.tagName)) return true;
       if (isRendered2 && !isRendered2(child)) return true;
-      const role = child.getAttribute("role") ?? "";
+      const role = effectiveRole(child);
       if (child.tagName === "LI") return !role || ITEM_ROLES.includes(role);
       if (ITEM_ROLES.includes(role)) return true;
       const genericWrapper = !child.hasAttribute("role") && (child.tagName === "DIV" || child.tagName === "SPAN");
@@ -3395,7 +3598,7 @@ var list_structure_default = {
     const invalid = effectiveChildren(element).filter((child) => !isValidChild(child));
     if (!invalid.length) {
       const renderedItems = effectiveChildren(element).filter((child) => child.tagName === "LI" && (!isRendered2 || isRendered2(child)));
-      const neutralised = renderedItems.filter((child) => ["presentation", "none"].includes(child.getAttribute("role") ?? ""));
+      const neutralised = renderedItems.filter((child) => ["presentation", "none"].includes(effectiveRole(child)));
       if (renderedItems.length && neutralised.length === renderedItems.length) {
         return {
           status: "fail",
@@ -3497,8 +3700,8 @@ var bypass_blocks_default = {
     const linkCount = roots.reduce((n, root) => n + (root.querySelectorAll?.("a[href], button").length ?? 0), 0);
     if (linkCount < 4) return { status: "pass" };
     return {
-      status: "fail",
-      message: `This page has ${linkCount} links and buttons but no landmark, heading, skip link, or titled frame \u2014 keyboard and screen-reader users must go through the whole header and nav to reach anything.`,
+      status: "incomplete",
+      message: `This page has ${linkCount} links and buttons but no detected landmark, heading, skip link or titled frame. Check whether it contains blocks repeated on other pages and, if so, whether a mechanism lets users bypass them. A single page cannot establish repetition.`,
       fix: 'Add a skip link like <a href="#content">Skip to content</a>, wrap primary content in <main>, or structure the page with headings.'
     };
   }
@@ -3587,12 +3790,11 @@ function isInTextLine(element) {
 }
 var NATIVE_CONTROL = /^(button|input|select|textarea)$/i;
 var SIZING = /^(width|height|(min|max)-(width|height|inline-size|block-size)|inline-size|block-size|padding(-.+)?|border(-.+)?|font(-.+)?|line-height|box-sizing|transform|scale|zoom|appearance|all)$/;
-var sizingRulesByRoot = /* @__PURE__ */ new WeakMap();
 function declaresSizing(style) {
   for (let k = 0; k < style.length; k++) if (SIZING.test(style[k])) return true;
   return false;
 }
-function authorSizingRules(root) {
+function authorSizingRules(root, sizingRulesByRoot) {
   const sheets = [...root.styleSheets ?? [], ...root.adoptedStyleSheets ?? []];
   const key = sheets.map((s) => {
     try {
@@ -3635,10 +3837,10 @@ function authorSizingRules(root) {
   sizingRulesByRoot.set(root, entry);
   return entry;
 }
-function uaSized(element) {
+function uaSized(element, sizingRulesByRoot) {
   if (!NATIVE_CONTROL.test(element.tagName) || element.type === "image") return "no";
   if (declaresSizing(element.style)) return "no";
-  const entry = authorSizingRules(element.getRootNode());
+  const entry = authorSizingRules(element.getRootNode(), sizingRulesByRoot);
   if (entry.combined && element.matches(entry.combined)) return "no";
   return entry.open ? "open" : "yes";
 }
@@ -3666,7 +3868,9 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
     visibility: "visual",
     // pointer targets are visual regardless of aria-hidden
     // Judged as a set: the spacing exception needs the other targets' positions.
-    evaluateAll(elements) {
+    async evaluateAll(elements, helpers = {}) {
+      const sizingRulesByRoot = /* @__PURE__ */ new WeakMap();
+      const yieldToMain = helpers.yieldToMain ?? (() => Promise.resolve());
       const targetRect = (element) => {
         const rect = element.getBoundingClientRect();
         const label = element.labels?.[0];
@@ -3680,7 +3884,11 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
         return { left, top, right, bottom, width: right - left, height: bottom - top };
       };
       const uaControlled = (element) => element.tagName === "INPUT" && (element.type === "checkbox" || element.type === "radio") && getComputedStyle(element).appearance !== "none";
-      const rects = elements.map(targetRect);
+      const rects = [];
+      for (let i = 0; i < elements.length; i++) {
+        if (i % 64 === 0) await yieldToMain();
+        rects.push(targetRect(elements[i]));
+      }
       const centers = rects.map((r) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 }));
       const layoutSkipped = (element) => {
         try {
@@ -3689,7 +3897,12 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
           return false;
         }
       };
-      const laidOut = rects.map((r, i) => r.width > 0 && r.height > 0 && !isInert(elements[i]) && !isHiddenFromPointer(elements[i], r) && !layoutSkipped(elements[i]));
+      const laidOut = [];
+      for (let i = 0; i < elements.length; i++) {
+        if (i % 64 === 0) await yieldToMain();
+        const r = rects[i], element = elements[i];
+        laidOut.push(r.width > 0 && r.height > 0 && !element.matches(":disabled") && !isInert(element) && !isHiddenFromPointer(element, r) && !layoutSkipped(element));
+      }
       const undersized = rects.map((r, i) => laidOut[i] && (r.width < min || r.height < min));
       const encloses = (a, b) => a.left <= b.left && a.right >= b.right && a.top <= b.top && a.bottom >= b.bottom;
       const paintedEncloses = (target, targetBox, innerBox) => {
@@ -3739,15 +3952,14 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
           { left: rect.left, top: rect.top, right: rect.right, bottom: overlap.top },
           { left: rect.left, top: overlap.bottom, right: rect.right, bottom: rect.bottom }
         ].map((s) => ({ ...s, width: s.right - s.left, height: s.bottom - s.top })).filter((s) => s.width >= 1 && s.height >= 1);
-        if (!slabs.length) {
-          return { left: rect.left, top: rect.top, right: rect.left, bottom: rect.top, width: 0, height: 0 };
-        }
-        return slabs.reduce((best, s) => s.width * s.height > best.width * best.height ? s : best);
+        return slabs;
       };
       const CELL = 256;
-      let cellIndex = null;
+      const cellIndex = /* @__PURE__ */ new Map();
+      const wideTargets = [];
       const cellsOf = (r) => {
         const keys = [];
+        if ((Math.floor(r.right / CELL) - Math.floor(r.left / CELL) + 1) * (Math.floor(r.bottom / CELL) - Math.floor(r.top / CELL) + 1) > 2048) return null;
         for (let cx = Math.floor(r.left / CELL); cx <= Math.floor(r.right / CELL); cx++) {
           for (let cy = Math.floor(r.top / CELL); cy <= Math.floor(r.bottom / CELL); cy++) {
             keys.push(`${cx}:${cy}`);
@@ -3755,36 +3967,55 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
         }
         return keys;
       };
-      const overlapCandidates = (i) => {
-        if (!cellIndex) {
-          cellIndex = /* @__PURE__ */ new Map();
-          rects.forEach((r, j) => {
-            if (!laidOut[j]) return;
-            for (const key of cellsOf(r)) {
-              if (!cellIndex.has(key)) cellIndex.set(key, []);
-              cellIndex.get(key).push(j);
-            }
-          });
+      for (let j = 0; j < rects.length; j++) {
+        if (j % 64 === 0) await yieldToMain();
+        if (!laidOut[j]) continue;
+        const keys = cellsOf(rects[j]);
+        if (!keys) {
+          wideTargets.push(j);
+          continue;
         }
-        const seen = /* @__PURE__ */ new Set();
-        for (const key of cellsOf(rects[i])) {
+        for (const key of keys) {
+          if (!cellIndex.has(key)) cellIndex.set(key, []);
+          cellIndex.get(key).push(j);
+        }
+      }
+      const nearbyCandidates = (i, box = rects[i]) => {
+        const keys = cellsOf(box);
+        if (!keys) return elements.map((_, j) => j).filter((j) => j !== i && laidOut[j]);
+        const seen = new Set(wideTargets.filter((j) => j !== i));
+        for (const key of keys) {
           for (const j of cellIndex.get(key) ?? []) if (j !== i) seen.add(j);
         }
         return seen;
       };
-      const obscuredRect = (i) => {
-        let effective = null;
-        for (const j of overlapCandidates(i)) {
+      const obscuredRects = /* @__PURE__ */ new Map();
+      const calculateObscuredRect = (i) => {
+        let areas = null;
+        for (const j of nearbyCandidates(i)) {
           if (elements[j].contains(elements[i]) || elements[i].contains(elements[j])) continue;
           if (encloses(rects[j], rects[i]) || encloses(rects[i], rects[j])) continue;
           if (typeof elements[i].href === "string" && elements[i].href === elements[j].href) continue;
-          const overlap = overlapOf(effective ?? rects[i], rects[j]);
+          const overlap = overlapOf(rects[i], rects[j]);
           if (!overlap) continue;
           if (fixedContextOf(elements[j]) !== fixedContextOf(elements[i])) continue;
           if (!paintsOver(j, i, overlap)) continue;
-          effective = uncovered(effective ?? rects[i], overlap);
+          const next = (areas ?? [rects[i]]).flatMap((area) => {
+            const cut = overlapOf(area, rects[j]);
+            return cut ? uncovered(area, cut) : [area];
+          });
+          areas = next.filter((area, k) => !next.some((other, n) => n !== k && encloses(other, area) && (n < k || !encloses(area, other))));
+          if (areas.length > 128) return { uncertain: true };
         }
-        return effective;
+        if (areas === null) return null;
+        return areas.find((area) => area.width >= min && area.height >= min) ?? areas.reduce(
+          (best, area) => area.width * area.height > best.width * best.height ? area : best,
+          { width: 0, height: 0 }
+        );
+      };
+      const obscuredRect = (i) => {
+        if (!obscuredRects.has(i)) obscuredRects.set(i, calculateObscuredRect(i));
+        return obscuredRects.get(i);
       };
       const destinationOf = (element) => {
         if (typeof element.href !== "string" || !element.href) return null;
@@ -3797,19 +4028,79 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
         const destination = destinationOf(elements[i]);
         if (!destination) return false;
         if (!adequateDestinations) {
-          adequateDestinations = /* @__PURE__ */ new Set();
+          adequateDestinations = /* @__PURE__ */ new Map();
           elements.forEach((other, j) => {
             if (!laidOut[j] || undersized[j] || other.ownerDocument !== elements[i].ownerDocument) return;
             const d = destinationOf(other);
-            if (d) adequateDestinations.add(d);
+            if (d) {
+              if (!adequateDestinations.has(d)) adequateDestinations.set(d, []);
+              adequateDestinations.get(d).push(j);
+            }
           });
         }
-        return adequateDestinations.has(destination);
+        let uncertain = false;
+        for (const j of adequateDestinations.get(destination) ?? []) {
+          if (j === i) continue;
+          const area = obscuredRect(j);
+          if (area?.uncertain) {
+            uncertain = true;
+            continue;
+          }
+          if (!area || area.width >= min && area.height >= min) return "pass";
+        }
+        return uncertain ? "incomplete" : null;
       };
-      return elements.map((element, i) => {
+      let alternativeKeys = null;
+      const names = /* @__PURE__ */ new Map();
+      const nameOf = (element) => {
+        if (!names.has(element)) names.set(element, helpers.accessibleName?.(element)?.trim() ?? "");
+        return names.get(element);
+      };
+      const signatures = (element) => {
+        const keys = [];
+        const name = nameOf(element);
+        if (name) keys.push(`name:${name}`);
+        const handler = element.getAttribute("onclick")?.trim();
+        if (handler) keys.push(`handler:${handler}`);
+        const controls = element.getAttribute("aria-controls")?.trim().split(/\s+/).sort().join(" ");
+        if (controls) keys.push(`controls:${controls}`);
+        return keys;
+      };
+      const plausibleAlternative = (i) => {
+        if (destinationOf(elements[i])) return false;
+        const own = signatures(elements[i]);
+        if (!own.length) return false;
+        if (!alternativeKeys) {
+          alternativeKeys = /* @__PURE__ */ new Map();
+          elements.forEach((other, j) => {
+            if (!laidOut[j] || undersized[j] || destinationOf(other)) return;
+            const area = obscuredRect(j);
+            if (area && !area.uncertain && (area.width < min || area.height < min)) return;
+            for (const key of signatures(other)) {
+              if (!alternativeKeys.has(key)) alternativeKeys.set(key, []);
+              alternativeKeys.get(key).push(j);
+            }
+          });
+        }
+        return own.some((key) => alternativeKeys.get(key)?.some((j) => j !== i));
+      };
+      const alternativeReview = () => ({
+        status: "incomplete",
+        message: `This control's measured pointer area is below ${min}\xD7${min}px, but a larger control has a matching name, handler or declared target. Check whether it provides the same function and meets the target-size requirement; if so, the Equivalent exception applies.`,
+        fix: "Verify the larger alternative, or enlarge or separate this target."
+      });
+      const equivalentReview = () => ({
+        status: "incomplete",
+        message: `Another link reaches the same destination, but its unobscured pointer area could not be established. Check whether that alternative meets ${min}\xD7${min}px before applying the Equivalent exception.`
+      });
+      const judge = (element, i) => {
         if (!laidOut[i]) return { status: "pass" };
         if (!undersized[i]) {
           const effective = obscuredRect(i);
+          if (effective?.uncertain) return {
+            status: "incomplete",
+            message: "Several targets overlap this control. The remaining pointer area could not be resolved within the geometry budget; check whether it contains the required target size."
+          };
           if (!effective || effective.width >= min && effective.height >= min) return { status: "pass" };
           if (isInTextLine(element)) return { status: "pass" };
           const everHit = (() => {
@@ -3828,6 +4119,10 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
             return !tested;
           })();
           if (!everHit) return { status: "pass" };
+          const equivalent2 = equivalentElsewhere(i);
+          if (equivalent2 === "pass") return { status: "pass" };
+          if (equivalent2 === "incomplete") return equivalentReview();
+          if (plausibleAlternative(i)) return alternativeReview();
           const rect2 = rects[i];
           return {
             status: "fail",
@@ -3840,7 +4135,7 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
           };
         }
         if (uaControlled(element)) return { status: "pass" };
-        const uaProof = uaSized(element);
+        const uaProof = uaSized(element, sizingRulesByRoot);
         if (uaProof === "yes") return { status: "pass" };
         if (isInTextLine(element)) return { status: "pass" };
         if (spacingException) {
@@ -3863,10 +4158,19 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
             if (!within(rects[j])) return false;
             return reachableRects(other, rects[j]).some(within);
           };
-          const crowded = elements.some(crowds);
+          const center = centers[i];
+          const crowded = [...nearbyCandidates(i, {
+            left: center.x - min,
+            right: center.x + min,
+            top: center.y - min,
+            bottom: center.y + min
+          })].some((j) => crowds(elements[j], j));
           if (!crowded) return { status: "pass" };
         }
-        if (equivalentElsewhere(i)) return { status: "pass" };
+        const equivalent = equivalentElsewhere(i);
+        if (equivalent === "pass") return { status: "pass" };
+        if (equivalent === "incomplete") return equivalentReview();
+        if (plausibleAlternative(i)) return alternativeReview();
         const rect = rects[i];
         if (uaProof === "open") {
           return {
@@ -3879,7 +4183,13 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
           message: spacingException ? `This target is ${px2(rect.width)}\xD7${px2(rect.height)}px AND another target crowds it (within ${min}px) \u2014 small targets are only acceptable with clear space around them; crowded ones are hard to hit for users with motor impairments.` : `This target is ${px2(rect.width)}\xD7${px2(rect.height)}px \u2014 below the ${min}\xD7${min}px minimum, hard to hit for users with motor impairments.`,
           fix: `Increase the element\u2019s size or padding to at least ${min}\xD7${min}px${spacingException ? ", or add spacing between the targets" : ""}.`
         };
-      });
+      };
+      const outcomes = [];
+      for (let i = 0; i < elements.length; i++) {
+        if (i % 64 === 0) await yieldToMain();
+        outcomes.push(judge(elements[i], i));
+      }
+      return outcomes;
     }
   };
 }
@@ -4037,13 +4347,13 @@ var pause_stop_hide_default = {
     if (!elements.length) return [];
     const moving = endlesslyMoving(elements[0].ownerDocument);
     return elements.map((element) => {
-      if (element.tagName === "MARQUEE" || element.tagName === "BLINK") {
+      if (element.tagName === "MARQUEE") {
         if (element.tagName === "MARQUEE" && element.getAttribute("scrollamount") === "0") {
           return { status: "pass" };
         }
         return {
-          status: "fail",
-          message: `<${element.tagName.toLowerCase()}> scrolls or blinks with no way to pause it, which is unusable for people with attention or vestibular conditions.`,
+          status: "incomplete",
+          message: "This marquee can scroll content. Check whether it actually starts automatically, continues for more than five seconds alongside other content, and has a working pause, stop or hide mechanism. The element alone does not establish those conditions.",
           fix: "Replace it with static content, or a CSS animation with a pause control that honours prefers-reduced-motion."
         };
       }
@@ -4134,6 +4444,7 @@ var aria_attr_valid_default = {
     for (const { name, value } of attributesOf(element)) {
       if (!name.startsWith("aria-")) continue;
       const attr = name.slice(5);
+      if (name === "aria-current" || name === "aria-invalid") continue;
       if (!KNOWN_ARIA.has(attr)) {
         unknown.push(name);
       } else if (ENUMS[name] && value.trim() === "") {
@@ -4217,10 +4528,11 @@ var aria_field_name_default = {
   tags: ["wcag2a", "wcag412"],
   help: "ARIA fields and value widgets must have an accessible name",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
-  selector: [...AUTHOR_ONLY, ...FROM_CONTENT].map((role) => `[role="${role}"]:not(input):not(select):not(textarea)`).join(", "),
+  selector: "[role]:not(input):not(select):not(textarea)",
   evaluate(element, { accessibleName: accessibleName2 }) {
-    const role = element.getAttribute("role");
-    const name = FROM_CONTENT.includes(role) ? accessibleName2(element) : authorName(element);
+    const role = effectiveRole(element);
+    if (![...AUTHOR_ONLY, ...FROM_CONTENT].includes(role)) return { status: "pass" };
+    const name = FROM_CONTENT.includes(role) || element.labels?.length ? accessibleName2(element) : authorName(element);
     if (name) return { status: "pass" };
     if (role === "combobox" && element.tabIndex < 0) {
       const input = element.querySelector('input, [role="textbox"], [role="searchbox"]');
@@ -4354,13 +4666,13 @@ var label_for_valid_default = {
   help: "label[for] must reference a form control that exists",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
   selector: "label[for]",
-  evaluate(element) {
+  evaluate(element, { accessibleName: accessibleName2 }) {
     const id = element.getAttribute("for");
     if (element.control) return { status: "pass" };
     const target = element.getRootNode().getElementById?.(id);
     if (target && target.tagName === "INPUT" && target.type === "hidden") return { status: "pass" };
     const wrapped = element.querySelector(WRAPPABLE);
-    if (wrapped) {
+    if (wrapped && !accessibleName2(wrapped)) {
       return {
         status: "fail",
         message: `This label wraps a <${wrapped.tagName.toLowerCase()}> but its for="${id}" ${target ? `points at a <${target.tagName.toLowerCase()}>, which is not labelable` : "points at nothing"}. The for attribute overrides the wrapping, so the wrapped control is not labelled by this text.`,
@@ -4519,7 +4831,11 @@ var area_alt_default = {
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/non-text-content.html",
   selector: "map area[href]",
   visibleOnly: false,
-  evaluate(element, { accessibleName: accessibleName2 }) {
+  evaluate(element, { accessibleName: accessibleName2, isVisible: isVisible2 }) {
+    const map = element.closest("map");
+    const images = [...element.getRootNode().querySelectorAll("img[usemap], object[usemap]")];
+    const active = map?.name && images.some((image) => image.getAttribute("usemap") === `#${map.name}` && isVisible2(image));
+    if (!active) return { status: "pass" };
     if (accessibleName2(element)) return { status: "pass" };
     return {
       status: "fail",
@@ -4650,8 +4966,8 @@ var meta_refresh_default = {
     if (delay > 72e3) return { status: "pass" };
     return {
       status: "fail",
-      message: `The page refreshes/redirects after ${delay}s \u2014 slow readers lose their place (or the whole page) with no control.`,
-      fix: "Remove the timed refresh; let users act in their own time."
+      message: `The page refreshes or redirects itself after ${delay}s. Slow readers lose their place, or the whole page, and a meta refresh offers no way to turn that off, adjust it or extend it. 2.2.1 excuses a time limit only where it is part of a real-time event or essential; this finding assumes neither applies, since the tag cannot show it.`,
+      fix: "Remove the timed refresh; let users act in their own time. If the page offers a control that turns the refresh off, or the refresh is essential, record that and dismiss this finding."
     };
   }
 };
@@ -4784,7 +5100,14 @@ var link_in_text_block_default = {
       if (sidePaints(s, "Bottom")) return { status: "pass" };
       if (boxShadowPaints(s.boxShadow)) return { status: "pass" };
       const ownBackground = parseColor(s.backgroundColor);
-      if (ownBackground && ownBackground.a > 0) return { status: "pass" };
+      if (ownBackground && ownBackground.a > 0) {
+        const surroundings = effectiveBackground(parent);
+        if (!surroundings) unclear = true;
+        else {
+          const shown2 = composite(ownBackground, surroundings);
+          if (["r", "g", "b"].some((channel2) => Math.round(shown2[channel2]) !== Math.round(surroundings[channel2]))) return { status: "pass" };
+        }
+      }
       const painted = backgroundImagePaints(s, el.getBoundingClientRect());
       if (painted === "yes") return { status: "pass" };
       if (painted === "unclear") unclear = true;
@@ -4796,8 +5119,13 @@ var link_in_text_block_default = {
     const weightStep = Math.max(...textBearers.map((s) => Math.abs(weight(s) - weight(parentStyle))));
     const sizeStep = Math.max(...textBearers.map((s) => Math.abs((parseFloat(s.fontSize) || parentSize) - parentSize)));
     const sizeCue = sizeStep >= 2 && sizeStep / parentSize >= 0.1;
-    let linkColor = parseColor(style.color);
-    let textColor = parseColor(parentStyle.color);
+    const glyphColours = cueBearers.filter(({ el }) => ownText2(el)).map(({ s }) => s.webkitTextFillColor || s.color);
+    const distinctColours = [...new Set(glyphColours)];
+    if (distinctColours.length > 1) {
+      return { status: "incomplete", message: "This link presents text in several colours without a detected non-colour cue. Check that each part is distinguishable from the surrounding text." };
+    }
+    let linkColor = parseColor(distinctColours[0] || style.webkitTextFillColor || style.color);
+    let textColor = parseColor(parentStyle.webkitTextFillColor || parentStyle.color);
     if (!linkColor || !textColor) return { status: "pass" };
     if ((linkColor.a ?? 1) < 1 || (textColor.a ?? 1) < 1) {
       if (backgroundImageSource(element)) {
@@ -4942,7 +5270,7 @@ var REQUIRED_CHILDREN = {
   treegrid: ["row", "rowgroup"],
   rowgroup: ["row"]
 };
-var roleOf = (element) => element.getAttribute("role")?.trim().split(/\s+/)[0]?.toLowerCase() ?? implicitRole(element);
+var roleOf = effectiveRole;
 function composedDescendants(element) {
   const found = [];
   const pending = [element];
@@ -4980,6 +5308,12 @@ function candidateDescendants(element) {
   }
   return found;
 }
+function exposedChild(element, isVisible2) {
+  if (isVisible2(element)) return true;
+  if (element.tagName !== "OPTION") return false;
+  const select = element.closest("select");
+  return !!select && isVisible2(select);
+}
 var aria_required_children_default = {
   id: "aria-required-children",
   name: "Required ARIA children",
@@ -4987,14 +5321,15 @@ var aria_required_children_default = {
   tags: ["wcag2a", "wcag131"],
   help: "Composite ARIA roles must contain their required children",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/info-and-relationships.html",
-  selector: Object.keys(REQUIRED_CHILDREN).map((role) => `[role="${role}"]`).join(", "),
-  evaluate(element) {
+  selector: "[role]",
+  evaluate(element, { isVisible: isVisible2 }) {
     if (element.getAttribute("aria-busy") === "true") return { status: "pass" };
-    const role = element.getAttribute("role").trim().split(/\s+/)[0].toLowerCase();
+    const role = effectiveRole(element);
     const required = REQUIRED_CHILDREN[role];
+    if (!required) return { status: "pass" };
     const children = [...element.children, ...element.shadowRoot?.children ?? []].filter((c) => !c.matches("script, style, template"));
     if (!children.length && !element.hasAttribute("aria-owns")) return { status: "pass" };
-    if (candidateDescendants(element).some((child) => required.includes(roleOf(child)))) {
+    if (candidateDescendants(element).some((child) => required.includes(roleOf(child)) && exposedChild(child, isVisible2))) {
       return { status: "pass" };
     }
     return {
@@ -5022,7 +5357,6 @@ var REQUIRED_PARENT = {
   cell: ["row"],
   gridcell: ["row"]
 };
-var IMPLICIT_CONTAINER = { ul: "list", ol: "list", menu: "list", table: "table", tbody: "rowgroup", thead: "rowgroup", tfoot: "rowgroup", tr: "row", figure: "figure" };
 var aria_required_parent_default = {
   id: "aria-required-parent",
   name: "Required ARIA parent",
@@ -5030,24 +5364,25 @@ var aria_required_parent_default = {
   tags: ["wcag2a", "wcag131"],
   help: "ARIA child roles must be inside their required container role",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/info-and-relationships.html",
-  selector: Object.keys(REQUIRED_PARENT).map((role) => `[role="${role}"]`).join(", "),
+  selector: "[role]",
   evaluate(element) {
-    const role = element.getAttribute("role").trim().split(/\s+/)[0].toLowerCase();
+    const role = effectiveRole(element);
     const containers = REQUIRED_PARENT[role];
+    if (!containers) return { status: "pass" };
     const named2 = containers.filter((container) => container !== "group");
     if (element.id) {
       const owner = element.getRootNode().querySelector?.(`[aria-owns~="${CSS.escape(element.id)}"]`);
-      const ownerRole = owner && (owner.getAttribute("role")?.trim().split(/\s+/)[0]?.toLowerCase() ?? IMPLICIT_CONTAINER[owner.tagName.toLowerCase()]);
+      const ownerRole = owner && effectiveRole(owner);
       if (ownerRole && containers.includes(ownerRole)) return { status: "pass" };
     }
     const flatParent = (node) => node.assignedSlot ?? node.parentElement ?? (node.getRootNode() instanceof ShadowRoot ? node.getRootNode().host : null);
     for (let parent = flatParent(element); parent; parent = flatParent(parent)) {
       if (parent.tagName === "SLOT" && !parent.hasAttribute("role")) continue;
-      const parentRole = parent.getAttribute("role")?.trim().split(/\s+/)[0]?.toLowerCase() ?? IMPLICIT_CONTAINER[parent.tagName.toLowerCase()];
+      const parentRole = effectiveRole(parent);
       if (containers.includes(parentRole)) return { status: "pass" };
       if (parentRole === "group") continue;
       if (parentRole === "presentation" || parentRole === "none") continue;
-      if (parentRole) break;
+      if (parentRole && parentRole !== "generic") break;
     }
     return {
       status: "fail",
@@ -5114,8 +5449,8 @@ var scrollable_region_focusable_default = {
     if (hasTabbableContent(element)) return { status: "pass" };
     if (element.hasAttribute("tabindex")) {
       return {
-        status: "fail",
-        message: 'This region scrolls, holds nothing tabbable, and its tabindex="-1" removes the region itself from the tab order \u2014 keyboard users cannot reach the overflowed content in any browser.',
+        status: "incomplete",
+        message: "This region scrolls, has no detected tabbable content and is removed from sequential focus by a negative tabindex. Check whether keyboard-operable controls elsewhere scroll it or move focus into it; without such a mechanism, the overflowed content may be unreachable.",
         fix: 'Change tabindex="-1" to tabindex="0" (plus role="region" and an aria-label describing it), or make something inside it tabbable.'
       };
     }
@@ -5158,7 +5493,7 @@ var table_headers_default = {
       const headers = cell.getAttribute("headers");
       return headers && headers.trim().split(/\s+/).filter(Boolean).some((id) => {
         const target = element.getRootNode().getElementById?.(id);
-        return !target || !cells.includes(target) || !(/^T[HD]$/.test(target.tagName) || isHeaderCell(target));
+        return !target || !cells.includes(target) || !isHeaderCell(target);
       });
     });
     if (badRefs.length) {
@@ -5176,10 +5511,21 @@ var table_headers_default = {
           message: 'This table has no header cells and its cells hold block content (headings, paragraphs, lists or forms), which is a layout-table signature. If it really presents data, mark its header cells with <th>; if it is layout scaffolding, add role="presentation".'
         };
       }
+      const filled = cells.filter((cell) => cell.textContent.trim());
+      const navigational = filled.every((cell) => {
+        const controls = [...cell.querySelectorAll("a, button")];
+        return controls.length && controls.map((control) => control.textContent.trim()).join(" ").replace(/\s+/g, " ") === cell.textContent.trim().replace(/\s+/g, " ");
+      });
+      if (navigational) {
+        return {
+          status: "incomplete",
+          message: 'This table has no header cells and every cell holds only a link or a button, which is the shape of a navigation block laid out as a table. If it presents data, mark its header cells with <th>; if it is layout, add role="presentation".'
+        };
+      }
       const twoColumns = Math.max(0, ...rows.map((row) => row.cells.length)) === 2;
       return {
         status: "fail",
-        message: "This looks like a data table but has no header cells \u2014 screen reader users get the data with no way to tell what each row/column means.",
+        message: 'This looks like a data table but has no header cells, so screen reader users get the data with no way to tell what each row or column means. If it only arranges content, mark it role="presentation" and dismiss this finding.',
         fix: twoColumns ? 'Mark the first cell of each row as <th scope="row">: in a two-column table the first column names what the second holds.' : 'Mark header cells with <th> (add scope="col" or scope="row" when the table has both).'
       };
     }
@@ -5262,9 +5608,20 @@ var control_contrast_default = {
     }
     const opacity = opacityAnimating(element) ? restingOpacity(element) : cumulativeOpacity(element);
     if (opacity < 0.05) return { status: "pass" };
+    if (hasPaintEffects(element)) {
+      return { status: "incomplete", message: "A filter or blend mode changes the colours presented inside this field. Check the resulting text contrast by eye." };
+    }
     const own = parseColor(style.backgroundColor);
     let background;
-    if (own && own.a >= 1) {
+    if (style.backgroundImage !== "none") {
+      const layers = splitBackgroundLayers(style.backgroundImage);
+      const range = layers.length === 1 && layers[0].includes("gradient(") ? sampledGradientRange(layers[0]) : null;
+      const fullBox = /^(auto|auto auto)$/.test(style.backgroundSize) && style.backgroundPosition === "0% 0%" && ["repeat", "no-repeat"].includes(style.backgroundRepeat);
+      if (!range || range.min !== range.max || opacity < 1 || !fullBox) {
+        return { status: "incomplete", message: "An image or gradient paints this field background. Check its text against the pixels behind it." };
+      }
+      background = range.minColor;
+    } else if (own && own.a >= 1) {
       background = own;
     } else {
       if (backgroundImageSource(element)) {
@@ -5274,15 +5631,27 @@ var control_contrast_default = {
         };
       }
       const behind = effectiveBackground(element);
-      background = behind && own && own.a > 0 ? composite(own, behind) : behind;
+      background = behind;
     }
     if (!background) {
       return { status: "incomplete", message: "The control\u2019s background could not be determined \u2014 check its text contrast by eye." };
     }
     const required = isLargeText(style) ? 3 : 4.5;
+    let unresolvedGroup = false;
     const judge = (color, what, ownOpacity = 1) => {
       const parsed = parseColor(color);
       if (!parsed || parsed.a === 0) return null;
+      if (opacity < 1) {
+        const group = opacityGroupPaint(element, { ...parsed, a: parsed.a * ownOpacity });
+        if (group?.unresolved) {
+          unresolvedGroup = true;
+          return null;
+        }
+        if (group) {
+          const ratio2 = contrastRatio(group.foreground, group.background);
+          return ratio2 >= required ? null : { what, ratio: ratio2 };
+        }
+      }
       const painted = opacity * ownOpacity;
       const faded = painted < 1 ? { ...parsed, a: parsed.a * painted } : parsed;
       const fg = faded.a < 1 ? composite(faded, background) : faded;
@@ -5291,14 +5660,14 @@ var control_contrast_default = {
       return { what, ratio };
     };
     const failures = [];
-    const valueVerdict = judge(style.color, "value text");
+    const valueVerdict = judge(style.webkitTextFillColor || style.color, "value text");
     if (valueVerdict) failures.push(valueVerdict);
-    if (element.getAttribute("placeholder")?.trim()) {
+    if (element.getAttribute("placeholder")?.trim() && element.matches(":placeholder-shown")) {
       let placeholderColor = null;
       let placeholderOpacity = 1;
       try {
         const placeholderStyle = getComputedStyle(element, "::placeholder");
-        placeholderColor = placeholderStyle.color;
+        placeholderColor = placeholderStyle.webkitTextFillColor || placeholderStyle.color;
         const parsedOpacity = parseFloat(placeholderStyle.opacity);
         if (Number.isFinite(parsedOpacity)) placeholderOpacity = Math.min(1, Math.max(0, parsedOpacity));
       } catch {
@@ -5308,6 +5677,7 @@ var control_contrast_default = {
         if (verdict) failures.push(verdict);
       }
     }
+    if (unresolvedGroup) return { status: "incomplete", message: "The field and its text fade together over an unresolved background. Check the presented text contrast by eye." };
     if (!failures.length) return { status: "pass" };
     const worst = failures.sort((a, b) => a.ratio - b.ratio)[0];
     return {
@@ -5394,7 +5764,15 @@ var non_text_contrast_default = {
       if (wrapperRect.height > ownRect.height + 24 || wrapperRect.width > ownRect.width + 160) break;
       const wrapperStyle = getComputedStyle(wrapper);
       const wrapperHasBorder = ["Top", "Right", "Bottom", "Left"].some((side) => parseFloat(wrapperStyle[`border${side}Width`]) > 0 && wrapperStyle[`border${side}Style`] !== "none" && (parseColor(wrapperStyle[`border${side}Color`])?.a ?? 0) > 0);
-      if (wrapperHasBorder) return { status: "pass" };
+      if (wrapperHasBorder) {
+        const around = effectiveBackground(wrapper.parentElement ?? wrapper);
+        const contrastingBorder = around && ["Top", "Right", "Bottom", "Left"].some((side) => {
+          if (!(parseFloat(wrapperStyle[`border${side}Width`]) > 0) || wrapperStyle[`border${side}Style`] === "none") return false;
+          const colour = parseColor(wrapperStyle[`border${side}Color`]);
+          return colour && contrastRatio(composite(colour, around), around) >= 3;
+        });
+        if (contrastingBorder) return { status: "pass" };
+      }
       const wrapperFill = parseColor(wrapperStyle.backgroundColor);
       if (wrapperFill && wrapperFill.a >= 1) {
         const around = effectiveBackground(wrapper.parentElement ?? wrapper);
@@ -5437,7 +5815,9 @@ var text_spacing_default = {
   visibility: "visual",
   evaluateAll(elements) {
     const doc = elements[0]?.ownerDocument ?? document;
-    if (elements.length > 2e4) return elements.map(() => ({ status: "pass" }));
+    if (elements.length > 2e4) {
+      return elements.map((_, index) => index === 0 ? { status: "incomplete", message: `The text-spacing probe was not run because this page has ${elements.length} candidate elements, exceeding its 20,000-element budget. Check the page with the WCAG spacing overrides applied.` } : { status: "skipped" });
+    }
     const candidates = elements.map((element) => {
       const style = getComputedStyle(element);
       const hides = /(hidden|clip)/.test(`${style.overflowX} ${style.overflowY}`);
@@ -5453,12 +5833,19 @@ var text_spacing_default = {
     probe2.dataset.pourAudit = "probe";
     probe2.textContent = override(doc.documentElement.scrollHeight);
     doc.documentElement.append(probe2);
+    const probes = [probe2];
+    for (const root of new Set(candidates.filter(Boolean).map((element) => element.getRootNode()))) {
+      if (root === doc || !root.host) continue;
+      const scoped = probe2.cloneNode(true);
+      root.append(scoped);
+      probes.push(scoped);
+    }
     let after;
     try {
       void doc.documentElement.offsetHeight;
       after = candidates.map((element) => element && clipped(element));
     } finally {
-      probe2.remove();
+      for (const applied of probes) applied.remove();
       void doc.documentElement.offsetHeight;
       if (win && (win.scrollX !== scrollX || win.scrollY !== scrollY)) win.scrollTo({ left: scrollX, top: scrollY, behavior: "instant" });
     }
@@ -5490,7 +5877,7 @@ var reflow_default = {
     if (overflow <= 1) return { status: "pass" };
     return {
       status: "incomplete",
-      message: `The page already scrolls horizontally by ${Math.round(overflow)}px at the current viewport \u2014 at the 320px reflow breakpoint it will be worse. Verify content reflows at 320 CSS px width (data tables, maps and images are exempt).`
+      message: `The page already scrolls horizontally by ${Math.round(overflow)}px at the current viewport. Verify content reflows at 320 CSS px width (data tables, maps and images are exempt).`
     };
   }
 };
@@ -5653,23 +6040,16 @@ var auth_field_obstruction_default = {
     const scopeQuestion = passwordFields >= 2 ? "This form holds more than one password field, the shape of account sign-up or a password change, which 3.3.8 does not cover unless the field takes an existing credential. Confirm whether this field is part of an authentication step at all." : "Nothing here shows the field takes an existing credential (no current-password purpose, and no username or email field beside it), so confirm it is part of signing in before treating this as a failure.";
     const step = provenLogin ? "this login" : "this step";
     if (blocksPaste && autocompleteOff) {
-      if (provenLogin) {
-        return {
-          status: "fail",
-          message: `This authentication field blocks pasting AND sets autocomplete="off", so both of the mechanisms 3.3.8 names are obstructed at once: copy and paste, and password-manager entry. What is left is typing the credential from memory.`,
-          fix: 'Remove the paste blocking, and drop autocomplete="off" so a password manager can fill the field.'
-        };
-      }
       return {
         status: "incomplete",
-        message: `This password field blocks pasting AND sets autocomplete="off". If it is part of signing in, both of the mechanisms 3.3.8 names are obstructed at once (copy and paste, and password-manager entry) and it fails. ${scopeQuestion}`,
+        message: `This field has a paste handler containing cancellation code and sets autocomplete="off". Check whether the handler actually blocks pasting, whether a password manager can fill the field, and whether another authentication method is available. Conditional code may leave pasting enabled, and autocomplete="off" does not establish that password-manager entry is blocked.${provenLogin ? "" : ` ${scopeQuestion}`}`,
         fix: 'Remove the paste blocking, and drop autocomplete="off" so a password manager can fill the field.'
       };
     }
     if (blocksPaste) {
       return {
         status: "incomplete",
-        message: `This field blocks pasting, which removes copy and paste, one of the two mechanisms 3.3.8 names. A password manager fills the field directly and is unaffected, so this is only a failure if nothing else here helps. Check whether a password manager can complete ${step}, or whether the page offers another way in such as a passkey or a federated sign-in.${provenLogin ? "" : ` ${scopeQuestion}`}`,
+        message: `This field has a paste handler containing cancellation code. Check whether pasting is actually blocked; the code may run only conditionally. Also check whether a password manager can complete ${step}, or whether the page offers another way in such as a passkey or a federated sign-in.${provenLogin ? "" : ` ${scopeQuestion}`}`,
         fix: "Remove the paste blocking, or make sure another way to sign in is available that does not rely on recalling the credential."
       };
     }
@@ -5963,6 +6343,7 @@ var invoker_target_default = {
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
   selector: "[popovertarget], [commandfor]",
   evaluate(element) {
+    if (element.matches(":disabled") || !element.matches('button, input[type="button"]')) return { status: "pass" };
     const root = element.getRootNode();
     const lookup = (id) => id && root.getElementById?.(id) || null;
     const problems = [];
@@ -5975,7 +6356,7 @@ var invoker_target_default = {
         problems.push(`popovertarget="${id}" points at a <${target.tagName.toLowerCase()}> with no popover attribute, which the button cannot open`);
       }
     }
-    if (element.hasAttribute("commandfor")) {
+    if (element.tagName === "BUTTON" && element.hasAttribute("commandfor")) {
       const id = element.getAttribute("commandfor").trim();
       const command = (element.getAttribute("command") ?? "").trim().toLowerCase();
       const target = lookup(id);
@@ -6207,7 +6588,7 @@ var composite_widget_name_default = {
   tags: ["wcag2a", "wcag412"],
   help: "Tabs, menu items, options and tree items need an accessible name",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
-  selector: '[role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="treeitem"]',
+  selector: "[role]",
   evaluate(element, { accessibleName: accessibleName2 }) {
     const role = effectiveRole(element);
     if (!ITEM_ROLES2.has(role)) return { status: "pass" };
@@ -6921,18 +7302,22 @@ var fieldset_legend_default = {
   // Judged as a set: only same-name groups of 2+ need grouping, and one
   // finding per group is enough.
   evaluateAll(elements) {
-    const groups = {};
+    const groups = /* @__PURE__ */ new Map();
     elements.forEach((element, index) => {
-      const key = `${element.type}::${element.form?.id ?? ""}::${element.name}`;
-      (groups[key] ??= []).push(index);
+      const owner = element.form ?? element.getRootNode();
+      if (!groups.has(owner)) groups.set(owner, /* @__PURE__ */ new Map());
+      const byName = groups.get(owner);
+      const key = `${element.type}::${element.name}`;
+      if (!byName.has(key)) byName.set(key, []);
+      byName.get(key).push(index);
     });
     const outcomes = elements.map(() => ({ status: "pass" }));
-    for (const indexes of Object.values(groups)) {
+    for (const indexes of [...groups.values()].flatMap((byName) => [...byName.values()])) {
       if (indexes.length < 2) continue;
       const first = elements[indexes[0]];
       const group = first.closest('fieldset, [role="group"], [role="radiogroup"]');
       const legend = group?.querySelector(":scope > legend");
-      const grouped = group && (legend && accessibleName(legend) || labelledByName(group) || group.getAttribute("aria-label")?.trim());
+      const grouped = group && indexes.every((index) => group.contains(elements[index])) && (legend && accessibleName(legend) || labelledByName(group) || group.getAttribute("aria-label")?.trim());
       if (grouped) continue;
       outcomes[indexes[0]] = {
         status: "fail",
@@ -7098,7 +7483,6 @@ var STATIC_RULES = /* @__PURE__ */ new Set([
   "bypass-blocks",
   "meta-viewport",
   "meta-refresh",
-  "orientation-lock",
   // Forms and input
   "autocomplete-valid",
   "error-message-linkage",
@@ -7583,59 +7967,64 @@ async function auditHtml(html, options = {}) {
   } catch {
   }
   installGlobals(window, options.viewport);
-  const helpers = { isVisible, isRendered, cssPath, htmlSnippet, ownText, accessibleName };
-  const tags = options.tags ?? WCAG_TAGS;
-  const active = rules_default.filter((rule) => !rule.disabled && STATIC_RULES.has(rule.id) && ruleMatchesTags(rule, tags) && (!options.only || rule.id === options.only) && !(options.template && !options.pageLevel && PAGE_RULES.has(rule.id)));
-  const roots = collectRoots(document2);
-  if (options.marks?.length) applyTemplateMarks(dom, roots, options.marks);
-  const findings = [];
-  const ran = [];
-  let abstained = 0;
-  for (const rule of active) {
-    let elements = roots.flatMap((root) => [...root.querySelectorAll(rule.selector)]);
-    if (rule.visibleOnly !== false) {
-      elements = elements.filter(rule.visibility === "visual" ? isRendered : isVisible);
-    }
-    let outcomes;
-    try {
-      outcomes = rule.evaluateAll ? await rule.evaluateAll(elements, helpers) : await Promise.all(elements.map((element) => rule.evaluate(element, helpers)));
-    } catch (error) {
-      ran.push({ id: rule.id, elements: elements.length, error: String(error?.message ?? error) });
-      continue;
-    }
-    const counts = { id: rule.id, elements: elements.length, pass: 0, fail: 0, incomplete: 0 };
-    elements.forEach((element, i) => {
-      const outcome2 = outcomes[i];
-      if (!outcome2 || outcome2.status === "pass") {
-        counts.pass += 1;
-        return;
+  resetDOMCaches();
+  try {
+    const helpers = { isVisible, isRendered, cssPath, htmlSnippet, ownText, accessibleName };
+    const tags = options.tags ?? WCAG_TAGS;
+    const active = rules_default.filter((rule) => !rule.disabled && STATIC_RULES.has(rule.id) && ruleMatchesTags(rule, tags) && (!options.only || rule.id === options.only) && !(options.template && !options.pageLevel && PAGE_RULES.has(rule.id)));
+    const roots = collectRoots(document2);
+    if (options.marks?.length) applyTemplateMarks(dom, roots, options.marks);
+    const findings = [];
+    const ran = [];
+    let abstained = 0;
+    for (const rule of active) {
+      let elements = roots.flatMap((root) => [...root.querySelectorAll(rule.selector)]);
+      if (rule.visibleOnly !== false) {
+        elements = elements.filter(rule.visibility === "visual" ? isRendered : isVisible);
       }
-      if (options.template) {
-        const unknowable = HEAD_RULES.has(rule.id) || BODY_RULES.has(rule.id) ? pageRegionUnknowable(rule.id, document2) : isDynamic(element, options.template);
-        if (unknowable) {
-          abstained += 1;
+      let outcomes;
+      try {
+        outcomes = rule.evaluateAll ? await rule.evaluateAll(elements, helpers) : await Promise.all(elements.map((element) => rule.evaluate(element, helpers)));
+      } catch (error) {
+        ran.push({ id: rule.id, elements: elements.length, error: String(error?.message ?? error) });
+        continue;
+      }
+      const counts = { id: rule.id, elements: elements.length, pass: 0, fail: 0, incomplete: 0 };
+      elements.forEach((element, i) => {
+        const outcome2 = outcomes[i];
+        if (!outcome2 || outcome2.status === "pass") {
+          counts.pass += 1;
           return;
         }
-      }
-      counts[outcome2.status] = (counts[outcome2.status] ?? 0) + 1;
-      findings.push({
-        rule: rule.id,
-        name: rule.name ?? rule.id,
-        impact: rule.impact,
-        status: outcome2.status,
-        help: rule.help,
-        helpUrl: rule.helpUrl,
-        message: outcome2.message ?? rule.help,
-        fix: outcome2.fix ?? null,
-        target: cssPath(element),
-        html: htmlSnippet(element, 160),
-        ...sourceSpan(dom, element)
+        if (options.template) {
+          const unknowable = HEAD_RULES.has(rule.id) || BODY_RULES.has(rule.id) ? pageRegionUnknowable(rule.id, document2) : isDynamic(element, options.template);
+          if (unknowable) {
+            abstained += 1;
+            return;
+          }
+        }
+        counts[outcome2.status] = (counts[outcome2.status] ?? 0) + 1;
+        findings.push({
+          rule: rule.id,
+          name: rule.name ?? rule.id,
+          impact: rule.impact,
+          status: outcome2.status,
+          help: rule.help,
+          helpUrl: rule.helpUrl,
+          message: outcome2.message ?? rule.help,
+          fix: outcome2.fix ?? null,
+          target: cssPath(element),
+          html: htmlSnippet(element, 160),
+          ...sourceSpan(dom, element)
+        });
       });
-    });
-    ran.push(counts);
+      ran.push(counts);
+    }
+    return { findings, rules: ran, abstained, durationMs: Math.round(performance.now() - started) };
+  } finally {
+    releaseDOMCaches();
+    window.close();
   }
-  window.close();
-  return { findings, rules: ran, abstained, durationMs: Math.round(performance.now() - started) };
 }
 var FRAGMENT_PREFIX = '<!doctype html><html lang="en"><head><title>Component</title></head><body>';
 var FRAGMENT_SUFFIX = "</body></html>";
