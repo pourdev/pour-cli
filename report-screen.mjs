@@ -5848,71 +5848,108 @@ function edgeReserved(doc, edge, needed) {
   const px2 = value && value.endsWith("px") ? parseFloat(value) : 0;
   return px2 >= needed - 1;
 }
-var focus_not_obscured_default = {
+function createFocusObscuredRule({ id, name, tags, help, helpUrl, partial }) {
+  return {
+    id,
+    name,
+    impact: "serious",
+    tags,
+    help,
+    helpUrl,
+    selector: FOCUSABLE3,
+    visibility: "visual",
+    evaluateAll(elements) {
+      const doc = elements[0]?.ownerDocument ?? document;
+      const win = doc.defaultView;
+      const modal = [...doc.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')].some((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== "hidden";
+      });
+      if (modal) return elements.map(() => ({ status: "pass" }));
+      const overlayVerdict = /* @__PURE__ */ new Map();
+      const isObscuringOverlay = (layer) => {
+        if (overlayVerdict.has(layer)) return overlayVerdict.get(layer);
+        let verdict = false;
+        const style = getComputedStyle(layer);
+        if (style.position === "fixed" || style.position === "sticky") {
+          const bg = style.backgroundColor.match(/rgba?\(([^)]+)\)/)?.[1]?.split(",");
+          const alpha = bg?.[3] === void 0 ? 1 : parseFloat(bg[3]);
+          const rect = layer.getBoundingClientRect();
+          verdict = alpha >= 0.9 && rect.width >= 40 && rect.height >= 24;
+        }
+        overlayVerdict.set(layer, verdict);
+        return verdict;
+      };
+      const contained = (rect, overlay) => rect.left >= overlay.left && rect.right <= overlay.right && rect.top >= overlay.top && rect.bottom <= overlay.bottom;
+      const overlaps = (rect, overlay) => Math.min(rect.right, overlay.right) - Math.max(rect.left, overlay.left) > 0 && Math.min(rect.bottom, overlay.bottom) - Math.max(rect.top, overlay.top) > 0;
+      const clampX = (x) => Math.min(Math.max(x, 0), win.innerWidth - 1);
+      const clampY = (y) => Math.min(Math.max(y, 0), win.innerHeight - 1);
+      const blockerAt = (element, rect, x, y) => {
+        const stack = doc.elementsFromPoint(clampX(x), clampY(y));
+        const index = stack.indexOf(element);
+        if (index <= 0) return null;
+        const above = stack.slice(0, index);
+        return above.find((layer) => !layer.contains(element) && !element.contains(layer) && isObscuringOverlay(layer) && (partial ? overlaps : contained)(rect, layer.getBoundingClientRect())) ?? null;
+      };
+      return elements.map((element) => {
+        if (element.matches(":disabled")) return { status: "pass" };
+        if (isInert(element)) return { status: "pass" };
+        const rect = element.getBoundingClientRect();
+        if (!rect.width || !rect.height) return { status: "pass" };
+        if (rect.bottom < 0 || rect.right < 0 || rect.top > win.innerHeight || rect.left > win.innerWidth) {
+          return { status: "pass" };
+        }
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let blocker = blockerAt(element, rect, cx, cy);
+        if (!blocker && partial) {
+          const inset = 1;
+          const xs = [rect.left + inset, cx, rect.right - inset];
+          const ys = [rect.top + inset, cy, rect.bottom - inset];
+          for (const x of xs) {
+            for (const y of ys) {
+              if (x === cx && y === cy) continue;
+              blocker = blockerAt(element, rect, x, y);
+              if (blocker) break;
+            }
+            if (blocker) break;
+          }
+        }
+        if (!blocker) return { status: "pass" };
+        const panel = blocker.getBoundingClientRect();
+        const edge = panel.top <= 1 && panel.bottom < win.innerHeight ? "top" : panel.bottom >= win.innerHeight - 1 ? "bottom" : null;
+        if (edge && edgeReserved(doc, edge, panel.height)) return { status: "pass" };
+        return partial ? {
+          status: "incomplete",
+          message: "Part of this element is currently underneath an opaque fixed panel. 2.4.12 (AAA) allows no part of a focused component to be hidden by author content, and whether that happens depends on where the page sits when focus reaches it \u2014 the browser does not scroll an element that is already in the viewport, merely overlapped, so focus can land half-hidden. Tab through the page and check the whole element, indicator included, stays clear of the panel.",
+          fix: `Reserve room for the panel with scroll-padding-${edge ?? "bottom"} on the scrolling container, or move focus clear of it when the panel is up.`
+        } : {
+          status: "incomplete",
+          message: "This element is currently underneath an opaque fixed panel. Whether that breaks 2.4.11 depends on where the page sits when focus reaches it \u2014 the browser does not scroll an element that is already in the viewport, merely covered, so focus can land invisibly. Tab through the page and check the focus indicator is never entirely hidden.",
+          fix: `Reserve room for the panel with scroll-padding-${edge ?? "bottom"} on the scrolling container, or move focus clear of it when the panel is up.`
+        };
+      });
+    }
+  };
+}
+var focus_not_obscured_default = createFocusObscuredRule({
   id: "focus-not-obscured",
   name: "Unobscured focus",
-  impact: "serious",
   tags: ["wcag22aa", "wcag2411"],
   help: "Focused elements must not be fully hidden behind overlays",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum.html",
-  selector: FOCUSABLE3,
-  visibility: "visual",
-  evaluateAll(elements) {
-    const doc = elements[0]?.ownerDocument ?? document;
-    const win = doc.defaultView;
-    const modal = [...doc.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')].some((el) => {
-      const rect = el.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== "hidden";
-    });
-    if (modal) return elements.map(() => ({ status: "pass" }));
-    const overlayVerdict = /* @__PURE__ */ new Map();
-    const isObscuringOverlay = (layer) => {
-      if (overlayVerdict.has(layer)) return overlayVerdict.get(layer);
-      let verdict = false;
-      const style = getComputedStyle(layer);
-      if (style.position === "fixed" || style.position === "sticky") {
-        const bg = style.backgroundColor.match(/rgba?\(([^)]+)\)/)?.[1]?.split(",");
-        const alpha = bg?.[3] === void 0 ? 1 : parseFloat(bg[3]);
-        const rect = layer.getBoundingClientRect();
-        verdict = alpha >= 0.9 && rect.width >= 40 && rect.height >= 24;
-      }
-      overlayVerdict.set(layer, verdict);
-      return verdict;
-    };
-    const covered = (rect, overlay) => rect.left >= overlay.left && rect.right <= overlay.right && rect.top >= overlay.top && rect.bottom <= overlay.bottom;
-    return elements.map((element) => {
-      if (element.matches(":disabled")) return { status: "pass" };
-      if (isInert(element)) return { status: "pass" };
-      const rect = element.getBoundingClientRect();
-      if (!rect.width || !rect.height) return { status: "pass" };
-      if (rect.bottom < 0 || rect.right < 0 || rect.top > win.innerHeight || rect.left > win.innerWidth) {
-        return { status: "pass" };
-      }
-      const x = Math.min(Math.max(rect.left + rect.width / 2, 0), win.innerWidth - 1);
-      const y = Math.min(Math.max(rect.top + rect.height / 2, 0), win.innerHeight - 1);
-      const stack = doc.elementsFromPoint(x, y);
-      const index = stack.indexOf(element);
-      if (index <= 0) return { status: "pass" };
-      const blocker = stack.slice(0, index).find((layer) => !layer.contains(element) && !element.contains(layer) && isObscuringOverlay(layer) && covered(rect, layer.getBoundingClientRect()));
-      if (!blocker) return { status: "pass" };
-      const panel = blocker.getBoundingClientRect();
-      const edge = panel.top <= 1 && panel.bottom < win.innerHeight ? "top" : panel.bottom >= win.innerHeight - 1 ? "bottom" : null;
-      if (edge && edgeReserved(doc, edge, panel.height)) return { status: "pass" };
-      return {
-        status: "incomplete",
-        message: "This element is currently underneath an opaque fixed panel. Whether that breaks 2.4.11 depends on where the page sits when focus reaches it \u2014 the browser does not scroll an element that is already in the viewport, merely covered, so focus can land invisibly. Tab through the page and check the focus indicator is never entirely hidden.",
-        fix: `Reserve room for the panel with scroll-padding-${edge ?? "bottom"} on the scrolling container, or move focus clear of it when the panel is up.`
-      };
-    });
-  }
-};
+  partial: false
+});
 
 // src/engine/rules/wcag/3.3.8-auth-field-obstruction.js
 var auth_field_obstruction_default = {
   id: "auth-field-obstruction",
   name: "Accessible login fields",
   impact: "serious",
-  tags: ["wcag22aa", "wcag338"],
+  // 3.3.9 (AAA) drops 3.3.8's object-recognition and personal-content
+  // exceptions and keeps everything this rule looks at: F109 is listed as a
+  // failure of both. Twin-tagged on the 2.1.1/2.1.3 precedent.
+  tags: ["wcag22aa", "wcag338", "wcag339"],
   help: "Login fields must not block paste or password managers",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/accessible-authentication-minimum.html",
   selector: 'input[type="password"]:not([autocomplete~="new-password"]), input[autocomplete~="current-password"], input[autocomplete~="one-time-code"]',
@@ -6511,6 +6548,431 @@ var summary_name_default = {
   }
 };
 
+// src/engine/rules/wcag/2.2.4-meta-refresh-no-exceptions.js
+var meta_refresh_no_exceptions_default = {
+  id: "meta-refresh-no-exceptions",
+  name: "Timed refresh (AAA)",
+  impact: "serious",
+  tags: ["wcag2aaa", "wcag224", "wcag325"],
+  help: "The page must not refresh or redirect itself on any timer (AAA)",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/interruptions.html",
+  selector: 'meta[http-equiv="refresh" i]',
+  visibleOnly: false,
+  evaluate(element) {
+    const content = element.getAttribute("content") ?? "";
+    const delay = refreshDelay(content);
+    if (delay === null) return { status: "pass" };
+    const hasDestination = refreshDestination(content) !== "";
+    if (delay === 0 && hasDestination) return { status: "pass" };
+    if (!hasDestination) {
+      return {
+        status: "fail",
+        message: `The page reloads itself${delay > 0 ? ` every ${delay}s` : " immediately, over and over"} (failure F41). The reader cannot postpone or suppress the reload, which 2.2.4 requires, and it changes the page without being asked, which 3.2.5 forbids. Neither AAA criterion has 2.2.1's 20-hour allowance.`,
+        fix: "Remove the timed refresh and update the content in place, or let the reader request an update with a control."
+      };
+    }
+    return {
+      status: "fail",
+      message: `The page redirects itself after ${delay}s (failure F40). The reader cannot postpone or suppress the move, which 2.2.4 requires, and the change of context is not requested, which 3.2.5 forbids; the AAA criteria allow no 20-hour exemption. 2.2.4 excuses only an emergency, which the tag cannot show, so this finding assumes there is none.`,
+      fix: 'Redirect instantly (content="0; url=\u2026") or on the server, or give the reader a link and let them choose when to move.'
+    };
+  }
+};
+
+// src/engine/rules/wcag/2.4.12-focus-not-obscured-enhanced.js
+var focus_not_obscured_enhanced_default = createFocusObscuredRule({
+  id: "focus-not-obscured-enhanced",
+  name: "Fully unobscured focus",
+  tags: ["wcag22aaa", "wcag2412"],
+  help: "No part of a focused element may be hidden behind overlays (AAA)",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-enhanced.html",
+  partial: true
+});
+
+// src/engine/rules/wcag/1.2.3-video-audio-description.js
+var video_audio_description_default = {
+  id: "video-audio-description",
+  name: "Video audio description",
+  impact: "serious",
+  tags: ["wcag2a", "wcag123", "wcag125"],
+  help: "Video content needs audio description or a text alternative",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/audio-description-prerecorded.html",
+  selector: "video",
+  visibleOnly: false,
+  evaluate(element) {
+    if (element.querySelector('track[kind="descriptions" i]')) return { status: "pass" };
+    if (!element.currentSrc && !element.getAttribute("src") && !element.querySelector("source")) {
+      return { status: "pass" };
+    }
+    if (element.muted && !element.controls) return { status: "pass" };
+    return {
+      status: "incomplete",
+      message: "This video has no audio-description track. If it shows something its soundtrack does not say (text on screen, actions, charts, who is speaking), blind and low-vision users miss it. 1.2.5 asks for audio description; at Level A, 1.2.3 is also met by a full text alternative describing the visuals, linked near the player. A talking-head video whose soundtrack already carries everything needs neither, and a video with no soundtrack at all is 1.2.1's question instead: check which this is, and where the description or alternative lives.",
+      fix: 'Provide a described audio track or a described version of the video (a <track kind="descriptions"> file works for text-based description), or publish a full transcript that describes the visuals next to the player.'
+    };
+  }
+};
+
+// src/engine/rules/wcag/2.4.6-heading-label-placeholder.js
+var SCAFFOLD = /* @__PURE__ */ new Set([
+  "add your heading text here",
+  "add a heading",
+  "add heading",
+  "your heading here",
+  "heading here",
+  "your title goes here",
+  "your title here",
+  "title goes here",
+  "title here",
+  "insert title here",
+  "insert heading here",
+  "heading text",
+  "heading goes here",
+  "section title here",
+  "placeholder",
+  "placeholder text",
+  "placeholder heading",
+  "label text",
+  "your label here",
+  "text here",
+  "enter text here",
+  "your text here",
+  "type here",
+  "sample heading",
+  "sample text",
+  "dummy text",
+  "dummy heading",
+  "todo",
+  "tbd",
+  "xxx",
+  "xxxx",
+  "asdf",
+  "this is a heading",
+  "this is a title",
+  "this is the heading",
+  "this is a label",
+  "new heading",
+  "new label",
+  "new section"
+]);
+var GENERIC2 = /* @__PURE__ */ new Set([
+  "heading",
+  "title",
+  "subtitle",
+  "headline",
+  "label",
+  "untitled",
+  "header",
+  "text",
+  "default",
+  "section",
+  "section title",
+  "section heading",
+  "page title",
+  "field",
+  "input"
+]);
+var NUMBERED = /^(?:heading|title|label|h)\s*[1-6]$/;
+var heading_label_placeholder_default = {
+  id: "heading-label-placeholder",
+  name: "Placeholder headings and labels",
+  impact: "moderate",
+  tags: ["wcag2aa", "wcag246"],
+  help: "Headings and labels must describe their topic or purpose, not be template text",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/headings-and-labels.html",
+  selector: 'h1, h2, h3, h4, h5, h6, [role="heading"], label, legend',
+  evaluate(element) {
+    const role = element.getAttribute("role");
+    if (/^h[1-6]$/i.test(element.tagName) && role && role !== "heading") return { status: "pass" };
+    const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (!text) return { status: "pass" };
+    const normalized = text.toLowerCase().replace(/[\s.:!…-]+$/, "");
+    const kind = /^h[1-6]$/i.test(element.tagName) || role === "heading" ? "heading" : "label";
+    if (SCAFFOLD.has(normalized) || normalized.startsWith("lorem ipsum") || NUMBERED.test(normalized)) {
+      return {
+        status: "fail",
+        message: `\u201C${text}\u201D is template text left in a ${kind}. It describes nothing, so a screen-reader user scanning by ${kind}s, or anyone reading the form, learns nothing from it.`,
+        fix: kind === "heading" ? "Replace it with words that name what the section is about." : "Replace it with words that name what the field asks for."
+      };
+    }
+    if (GENERIC2.has(normalized)) {
+      return {
+        status: "incomplete",
+        message: `\u201C${text}\u201D is a generic ${kind}. Check whether it describes the topic of its section or the purpose of its field; the same word can also be a real subject or name.`,
+        fix: kind === "heading" ? "Name the section's actual topic in the heading." : "Name what the field asks for in the label."
+      };
+    }
+    return { status: "pass" };
+  }
+};
+
+// src/engine/rules/wcag/1.4.8-text-justified.js
+var BLOCK = /^(?:block|list-item|table-cell|flow-root)$/;
+function inlineText(element) {
+  let text = "";
+  for (const node of element.childNodes) {
+    if (node.nodeType === 3) text += node.textContent;
+    else if (node.nodeType === 1 && getComputedStyle(node).display.startsWith("inline")) text += node.textContent;
+  }
+  return text.replace(/\s+/g, " ").trim();
+}
+var text_justified_default = {
+  id: "text-justified",
+  name: "Justified text",
+  impact: "moderate",
+  tags: ["wcag2aaa", "wcag148"],
+  help: "Blocks of text should not be justified to both margins (AAA)",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/visual-presentation.html",
+  selector: "p, li, dd, dt, td, th, blockquote, figcaption, summary, address, div, section, article, main, aside, header, footer",
+  evaluate(element) {
+    const style = getComputedStyle(element);
+    if (style.textAlign !== "justify" && style.textAlign !== "justify-all") return { status: "pass" };
+    if (!BLOCK.test(style.display)) return { status: "pass" };
+    if (inlineText(element).length < 120) return { status: "pass" };
+    return {
+      status: "incomplete",
+      message: 'This block of text is justified to both margins. The uneven spaces between words form "rivers of white" down the page that some readers with dyslexia or low vision cannot read across (failure F88). 1.4.8 allows justified text only where a mechanism lets the reader switch it off; check that one exists, in the page or the browser.',
+      fix: "Set text-align: start (or left) on running text, or offer a control that turns justification off."
+    };
+  }
+};
+
+// src/engine/rules/wcag/2.4.10-section-heading.js
+var HEADING = 'h1, h2, h3, h4, h5, h6, [role="heading"]';
+var SUBSTANTIVE = "img, svg, video, audio, canvas, iframe, input, select, textarea, button";
+var SKIP = "script, style, template, noscript";
+function edgeIsHeading(element, fromEnd) {
+  const children = (node) => fromEnd ? [...node.childNodes].reverse() : [...node.childNodes];
+  const stack = children(element).reverse();
+  while (stack.length) {
+    const node = stack.pop();
+    if (node.nodeType === 3) {
+      if (node.textContent.trim()) return false;
+      continue;
+    }
+    if (node.nodeType !== 1) continue;
+    if (node.matches(HEADING)) return true;
+    if (node.matches(SKIP)) continue;
+    if (node.matches(SUBSTANTIVE)) return false;
+    for (const child of children(node).reverse()) stack.push(child);
+  }
+  return false;
+}
+var section_heading_default = {
+  id: "section-heading",
+  name: "Section headings",
+  impact: "moderate",
+  tags: ["wcag2aaa", "wcag2410"],
+  help: "Sections of written content should begin with a heading (AAA)",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/section-headings.html",
+  selector: "section",
+  evaluate(element) {
+    if (element.hasAttribute("aria-label") || element.hasAttribute("aria-labelledby")) return { status: "pass" };
+    const role = element.getAttribute("role");
+    if (role && role !== "region") return { status: "pass" };
+    const ownHeading = [...element.querySelectorAll(HEADING)].some((heading) => heading.closest("section, article") === element);
+    if (ownHeading || edgeIsHeading(element, false)) return { status: "pass" };
+    const before = element.previousElementSibling;
+    if (before && (before.matches(HEADING) || before.matches("header, hgroup") && before.querySelector(HEADING) || edgeIsHeading(before, true))) {
+      return { status: "pass" };
+    }
+    const item = element.closest("article");
+    if (item && item.parentElement && !item.querySelector(HEADING)) {
+      const items = (node) => [...node.children].filter((child) => child.matches("article") || child.querySelector(":scope > article")).length;
+      const container = item.parentElement;
+      if (items(container) >= 3 || container.parentElement && items(container.parentElement) >= 3) return { status: "pass" };
+    }
+    const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+    const paragraphs = element.querySelectorAll("p").length;
+    if (text.length < 200 && paragraphs < 2) return { status: "pass" };
+    return {
+      status: "incomplete",
+      message: "This section holds written content but begins with no heading of its own, so readers scanning by headings cannot find or skip it. 2.4.10 asks for a heading at the start of each section of writing; check whether this is a section of content that needs one, or a purely structural wrapper.",
+      fix: "Start the section with a heading that names its topic, at the level below its parent heading, or name it with aria-labelledby pointing at its visible title."
+    };
+  }
+};
+
+// src/engine/rules/wcag/3.3.9-captcha-alternative.js
+var CREDENTIAL = 'input[type="password"], input[autocomplete~="current-password"], input[autocomplete~="one-time-code"]';
+var captcha_alternative_default = {
+  id: "captcha-alternative",
+  name: "CAPTCHA in a login step",
+  impact: "serious",
+  tags: ["wcag22aaa", "wcag339"],
+  help: "A picture-puzzle CAPTCHA in an authentication step needs an alternative (AAA)",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/accessible-authentication-enhanced.html",
+  selector: 'iframe[src*="recaptcha" i], iframe[src*="hcaptcha" i], iframe[src*="turnstile" i], .g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey]',
+  visibleOnly: false,
+  evaluate(element) {
+    const form = element.closest("form");
+    if (!form || !form.querySelector(CREDENTIAL)) return { status: "pass" };
+    return {
+      status: "incomplete",
+      message: "This login form carries a CAPTCHA widget. If the challenge can escalate to a picture puzzle, that is object recognition, which 3.3.8 allows but 3.3.9 (AAA) does not: a cognitive function test in an authentication step then needs another way in (a passkey, an emailed link, a federated sign-in) or a mechanism that helps the user through it. Check what the widget can show and what the alternatives are.",
+      fix: "Use a risk-based or invisible challenge that never shows a puzzle, or offer another authentication method beside it."
+    };
+  }
+};
+
+// src/engine/rules/best-practice/region.js
+var LANDMARK = 'main, nav, aside, search, form[aria-label], form[aria-labelledby], header:not(:is(article, aside, main, nav, section) header), footer:not(:is(article, aside, main, nav, section) footer), section[aria-label], section[aria-labelledby], [role="main"], [role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"], [role="region"][aria-label], [role="region"][aria-labelledby], [role="form"][aria-label], [role="form"][aria-labelledby], [role="search"], [role="dialog"], [role="alertdialog"], dialog[open]';
+var region_default = {
+  id: "region",
+  name: "Content outside landmarks",
+  impact: "moderate",
+  tags: ["best-practice"],
+  help: "All readable content belongs inside a landmark region",
+  helpUrl: "https://www.w3.org/WAI/ARIA/apg/practices/landmark-regions/",
+  // Any element with its own text — wrapper elements without direct text are
+  // skipped, so each offending text block is reported exactly once.
+  selector: "body *:not(script):not(style):not(template):not(noscript)",
+  // evaluateAll so document-level facts are computed ONCE per audit: a
+  // page with NO landmarks at all has one structural problem, not one per
+  // text block — landmark-one-main reports it once; flagging every
+  // paragraph (30k times on a single-page spec) is noise at ruinous
+  // serialization cost. region's per-block value is for pages that HAVE
+  // landmarks but leave content outside them.
+  evaluateAll(elements, helpers) {
+    const doc = elements[0]?.ownerDocument ?? document;
+    if (!doc.querySelector(LANDMARK)) return elements.map(() => ({ status: "pass" }));
+    return elements.map((element) => this.judge(element, helpers));
+  },
+  judge(element, { ownText }) {
+    const isMedia = element.matches(
+      'img:not([alt=""]):not([role="presentation"]):not([role="none"]), svg[role="img"], video, audio, canvas, iframe, input:not([type="hidden"]), select, textarea, button'
+    );
+    if (!ownText(element) && !isMedia) return { status: "pass" };
+    if (element.closest(LANDMARK)) return { status: "pass" };
+    const doc = element.ownerDocument;
+    const link = element.closest('a[href*="#"]');
+    if (link) {
+      let id = link.getAttribute("href").split("#")[1] ?? "";
+      try {
+        id = decodeURIComponent(id);
+      } catch {
+      }
+      const target = id && (doc.getElementById(id) || doc.getElementsByName(id)[0]);
+      const looksLikeSkip = /^skip\b/i.test(link.textContent.trim());
+      const firstLandmark = doc.querySelector(LANDMARK);
+      const beforeLandmarks = !firstLandmark || link.compareDocumentPosition(firstLandmark) & Node.DOCUMENT_POSITION_FOLLOWING;
+      if ((target || looksLikeSkip) && beforeLandmarks) return { status: "pass" };
+    }
+    for (let parent = element.parentElement; parent && parent !== doc.body; parent = parent.parentElement) {
+      if (ownText(parent)) return { status: "pass" };
+    }
+    return {
+      status: "fail",
+      message: "This content sits outside any landmark, so screen-reader users navigating by regions never reach it.",
+      fix: "Move it into <main>, <nav>, <header>, <footer>, <aside>, or a labelled <section>."
+    };
+  }
+};
+
+// src/engine/rules/wcag/1.3.6-region-purpose.js
+var region_purpose_default = {
+  id: "region-purpose",
+  name: "Regions with a purpose",
+  impact: "moderate",
+  tags: ["wcag21aaa", "wcag136"],
+  help: "The purpose of page regions should be programmatically determinable (AAA)",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/identify-purpose.html",
+  selector: "html",
+  visibleOnly: false,
+  evaluate(element) {
+    const doc = element.ownerDocument;
+    if (doc.querySelector(LANDMARK)) return { status: "pass" };
+    return {
+      status: "incomplete",
+      message: "This page declares no landmark regions (no main, nav, header, footer, aside, search or labelled region), so the purpose of its regions is not exposed to assistive technology or personalisation tools. 1.3.6 (AAA) lists landmarks as the way to identify regions; the purpose of components and icons still needs a person to check.",
+      fix: "Wrap the page's regions in <main>, <nav>, <header>, <footer>, <aside> and labelled <section> elements (or the matching ARIA roles)."
+    };
+  }
+};
+
+// src/engine/rules/wcag/3.3.4-financial-form-confirmation.js
+var financial_form_confirmation_default = {
+  id: "financial-form-confirmation",
+  name: "Payment form safeguards",
+  impact: "serious",
+  tags: ["wcag2aa", "wcag334"],
+  help: "A form that takes a payment must be reversible, checked or confirmed before submission",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/error-prevention-legal-financial-data.html",
+  selector: "form",
+  visibleOnly: false,
+  evaluate(element) {
+    if (!element.querySelector('input[autocomplete*="cc-" i], input[autocomplete~="transaction-amount" i]')) return { status: "pass" };
+    return {
+      status: "incomplete",
+      message: "This form collects card details, so submitting it makes a financial transaction. 3.3.4 requires at least one of: the submission can be reversed, the entries are checked for errors with a chance to correct them, or a review-and-confirm step comes before the final submit. Check which applies to this checkout.",
+      fix: "Add a review page before the final submit, validate the entries and let the user correct them, or state a period in which the order can be amended or cancelled."
+    };
+  }
+};
+
+// src/engine/rules/wcag/2.5.1-pointer-gesture-alternative.js
+var HANDLED = /* @__PURE__ */ new Set(["auto", "manipulation"]);
+function handsGestureToScript(value) {
+  if (!value || HANDLED.has(value)) return false;
+  const tokens = value.split(/\s+/);
+  if (tokens.includes("none")) return true;
+  const panX = tokens.some((t) => /^pan-(x|left|right)$/.test(t));
+  const panY = tokens.some((t) => /^pan-(y|up|down)$/.test(t));
+  return !panX || !panY;
+}
+var pointer_gesture_alternative_default = {
+  id: "pointer-gesture-alternative",
+  name: "Pointer gesture alternative",
+  impact: "serious",
+  tags: ["wcag21a", "wcag251"],
+  help: "Swipe, pan and pinch gestures need a single-pointer alternative",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/pointer-gestures.html",
+  selector: "*",
+  visibleOnly: false,
+  evaluateAll(elements, { isRendered }) {
+    const candidates = /* @__PURE__ */ new Set();
+    for (const element of elements) {
+      const tag = element.tagName;
+      if (tag === "HTML" || tag === "BODY" || tag === "SCRIPT" || tag === "STYLE" || tag === "LINK" || tag === "META" || tag === "TEMPLATE") continue;
+      if (element.getAttribute("draggable") === "true" || element.getAttribute("role") === "slider" || tag === "INPUT" && element.type === "range") continue;
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 100 || rect.height < 60) continue;
+      if (!isRendered(element)) continue;
+      const value = getComputedStyle(element).touchAction;
+      if (!handsGestureToScript(value)) continue;
+      candidates.add(element);
+    }
+    const outermost = /* @__PURE__ */ new Set();
+    const reportedParents = /* @__PURE__ */ new Set();
+    for (const element of candidates) {
+      let nested = false;
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        if (candidates.has(parent)) {
+          nested = true;
+          break;
+        }
+      }
+      if (nested || reportedParents.has(element.parentElement)) continue;
+      reportedParents.add(element.parentElement);
+      outermost.add(element);
+    }
+    return elements.map((element) => {
+      if (!outermost.has(element)) return { status: "pass" };
+      const value = getComputedStyle(element).touchAction;
+      const tokens = value.split(/\s+/);
+      const handled = tokens.includes("none") ? "every touch gesture" : [
+        !tokens.some((t) => /^pan-(x|left|right)$/.test(t)) && "horizontal swipes",
+        !tokens.some((t) => /^pan-(y|up|down)$/.test(t)) && "vertical swipes"
+      ].filter(Boolean).join(" and ");
+      return {
+        status: "incomplete",
+        message: `touch-action: ${value} tells the browser to hand ${handled} on this element to the page's own script, which is how custom swipe, pan and pinch interactions are built. 2.5.1 requires whatever those gestures do to also work with a single tap or click (previous and next buttons, zoom in and out, a choose-a-value control), unless the gesture is essential. Check a single-pointer way exists for everything the gesture does.`,
+        fix: "Add plain buttons for the same actions (previous/next, zoom in/out), or make the element operable by simple clicks as well as gestures."
+      };
+    });
+  }
+};
+
 // src/engine/rules/best-practice/heading-order.js
 var level = (el) => el.hasAttribute("aria-level") ? parseInt(el.getAttribute("aria-level"), 10) : parseInt(el.tagName[1], 10) || 2;
 var inOutline = (el) => {
@@ -6584,60 +7046,6 @@ var positive_tabindex_default = {
   }
 };
 
-// src/engine/rules/best-practice/region.js
-var LANDMARK = 'main, nav, aside, search, form[aria-label], form[aria-labelledby], header:not(:is(article, aside, main, nav, section) header), footer:not(:is(article, aside, main, nav, section) footer), section[aria-label], section[aria-labelledby], [role="main"], [role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"], [role="region"][aria-label], [role="region"][aria-labelledby], [role="form"][aria-label], [role="form"][aria-labelledby], [role="search"], [role="dialog"], [role="alertdialog"], dialog[open]';
-var region_default = {
-  id: "region",
-  name: "Content outside landmarks",
-  impact: "moderate",
-  tags: ["best-practice"],
-  help: "All readable content belongs inside a landmark region",
-  helpUrl: "https://www.w3.org/WAI/ARIA/apg/practices/landmark-regions/",
-  // Any element with its own text — wrapper elements without direct text are
-  // skipped, so each offending text block is reported exactly once.
-  selector: "body *:not(script):not(style):not(template):not(noscript)",
-  // evaluateAll so document-level facts are computed ONCE per audit: a
-  // page with NO landmarks at all has one structural problem, not one per
-  // text block — landmark-one-main reports it once; flagging every
-  // paragraph (30k times on a single-page spec) is noise at ruinous
-  // serialization cost. region's per-block value is for pages that HAVE
-  // landmarks but leave content outside them.
-  evaluateAll(elements, helpers) {
-    const doc = elements[0]?.ownerDocument ?? document;
-    if (!doc.querySelector(LANDMARK)) return elements.map(() => ({ status: "pass" }));
-    return elements.map((element) => this.judge(element, helpers));
-  },
-  judge(element, { ownText }) {
-    const isMedia = element.matches(
-      'img:not([alt=""]):not([role="presentation"]):not([role="none"]), svg[role="img"], video, audio, canvas, iframe, input:not([type="hidden"]), select, textarea, button'
-    );
-    if (!ownText(element) && !isMedia) return { status: "pass" };
-    if (element.closest(LANDMARK)) return { status: "pass" };
-    const doc = element.ownerDocument;
-    const link = element.closest('a[href*="#"]');
-    if (link) {
-      let id = link.getAttribute("href").split("#")[1] ?? "";
-      try {
-        id = decodeURIComponent(id);
-      } catch {
-      }
-      const target = id && (doc.getElementById(id) || doc.getElementsByName(id)[0]);
-      const looksLikeSkip = /^skip\b/i.test(link.textContent.trim());
-      const firstLandmark = doc.querySelector(LANDMARK);
-      const beforeLandmarks = !firstLandmark || link.compareDocumentPosition(firstLandmark) & Node.DOCUMENT_POSITION_FOLLOWING;
-      if ((target || looksLikeSkip) && beforeLandmarks) return { status: "pass" };
-    }
-    for (let parent = element.parentElement; parent && parent !== doc.body; parent = parent.parentElement) {
-      if (ownText(parent)) return { status: "pass" };
-    }
-    return {
-      status: "fail",
-      message: "This content sits outside any landmark, so screen-reader users navigating by regions never reach it.",
-      fix: "Move it into <main>, <nav>, <header>, <footer>, <aside>, or a labelled <section>."
-    };
-  }
-};
-
 // src/engine/rules/best-practice/landmark-one-main.js
 var landmark_one_main_default = {
   id: "landmark-one-main",
@@ -6660,7 +7068,7 @@ var landmark_one_main_default = {
 };
 
 // src/engine/rules/best-practice/page-heading-one.js
-var HEADING = 'h1, h2, h3, h4, h5, h6, [role="heading"]';
+var HEADING2 = 'h1, h2, h3, h4, h5, h6, [role="heading"]';
 var page_heading_one_default = {
   id: "page-heading-one",
   name: "Leading page heading",
@@ -6671,7 +7079,7 @@ var page_heading_one_default = {
   selector: "html",
   visibleOnly: false,
   evaluate(element) {
-    const hasLevelOne = collectRoots(element.ownerDocument).some((root) => [...root.querySelectorAll(HEADING)].some((heading) => level(heading) === 1));
+    const hasLevelOne = collectRoots(element.ownerDocument).some((root) => [...root.querySelectorAll(HEADING2)].some((heading) => level(heading) === 1));
     if (hasLevelOne) return { status: "pass" };
     return {
       status: "fail",
@@ -7293,6 +7701,16 @@ var rules_default = [
   error_message_linkage_default,
   composite_widget_name_default,
   summary_name_default,
+  meta_refresh_no_exceptions_default,
+  focus_not_obscured_enhanced_default,
+  video_audio_description_default,
+  heading_label_placeholder_default,
+  text_justified_default,
+  section_heading_default,
+  captcha_alternative_default,
+  region_purpose_default,
+  financial_form_confirmation_default,
+  pointer_gesture_alternative_default,
   contrast_enhanced_default,
   target_size_enhanced_default,
   heading_order_default,
@@ -7337,9 +7755,11 @@ var wcag22_default = [
   sc("1.2.1", "Audio-only and Video-only (Prerecorded)", "A", "partial"),
   // partial: the audio-only transcript question is askable; silent-video detection is not
   sc("1.2.2", "Captions (Prerecorded)", "A", "partial"),
-  sc("1.2.3", "Audio Description or Media Alternative (Prerecorded)", "A", "manual"),
+  sc("1.2.3", "Audio Description or Media Alternative (Prerecorded)", "A", "partial"),
+  // partial: video-audio-description asks per sound-capable video without a descriptions track; whether description or a text alternative exists, or is needed at all, is the reviewer's
   sc("1.2.4", "Captions (Live)", "AA", "manual"),
-  sc("1.2.5", "Audio Description (Prerecorded)", "AA", "manual"),
+  sc("1.2.5", "Audio Description (Prerecorded)", "AA", "partial"),
+  // partial: same question as 1.2.3 (video-audio-description); H96 descriptions track is the one DOM-visible pass
   sc("1.2.6", "Sign Language (Prerecorded)", "AAA", "manual"),
   sc("1.2.7", "Extended Audio Description (Prerecorded)", "AAA", "manual"),
   sc("1.2.8", "Media Alternative (Prerecorded)", "AAA", "manual"),
@@ -7352,7 +7772,8 @@ var wcag22_default = [
   // orientation-lock asserts CSS root hides/rotations as ACT b33eff does, essential exception assumed absent; script locks stay a human check
   sc("1.3.5", "Identify Input Purpose", "AA", "partial", "2.1"),
   // partial: wrong tokens are asserted as ACT 73f2c2 does (search boxes asked); MISSING autocomplete on identity fields needs judgment
-  sc("1.3.6", "Identify Purpose", "AAA", "manual", "2.1"),
+  sc("1.3.6", "Identify Purpose", "AAA", "partial", "2.1"),
+  // partial: region-purpose asks once per page with no landmark at all (ARIA11 is the regions technique); component and icon purpose stays human
   sc("1.4.1", "Use of Color", "A", "partial"),
   // link-in-text-block automates the link case
   sc("1.4.2", "Audio Control", "A", "partial"),
@@ -7362,7 +7783,8 @@ var wcag22_default = [
   sc("1.4.5", "Images of Text", "AA", "manual"),
   sc("1.4.6", "Contrast (Enhanced)", "AAA", "partial"),
   sc("1.4.7", "Low or No Background Audio", "AAA", "manual"),
-  sc("1.4.8", "Visual Presentation", "AAA", "manual"),
+  sc("1.4.8", "Visual Presentation", "AAA", "partial"),
+  // partial: text-justified asks about justified running text (F88); the other four requirements are met by browser mechanisms and not judged
   sc("1.4.9", "Images of Text (No Exception)", "AAA", "manual"),
   sc("1.4.10", "Reflow", "AA", "partial", "2.1"),
   // partial: reflow (current-viewport overflow heuristic); full test is at 320px
@@ -7381,7 +7803,8 @@ var wcag22_default = [
   // meta-refresh automates the redirect/refresh case
   sc("2.2.2", "Pause, Stop, Hide", "A", "partial"),
   sc("2.2.3", "No Timing", "AAA", "manual"),
-  sc("2.2.4", "Interruptions", "AAA", "manual"),
+  sc("2.2.4", "Interruptions", "AAA", "partial"),
+  // partial: meta-refresh-no-exceptions asserts any timed refresh or redirect (F40, F41); scripted interruptions are invisible
   sc("2.2.5", "Re-authenticating", "AAA", "manual"),
   sc("2.2.6", "Timeouts", "AAA", "manual", "2.1"),
   sc("2.3.1", "Three Flashes or Below Threshold", "A", "manual"),
@@ -7396,18 +7819,22 @@ var wcag22_default = [
   // visual-order-divergence flags CSS order/*-reverse against DOM order; whether an order preserves MEANING stays human
   sc("2.4.4", "Link Purpose (In Context)", "A", "partial"),
   sc("2.4.5", "Multiple Ways", "AA", "manual"),
-  sc("2.4.6", "Headings and Labels", "AA", "manual"),
+  sc("2.4.6", "Headings and Labels", "AA", "partial"),
+  // partial: heading-label-placeholder asserts template text left in a heading or label and asks about single generic words; whether real words describe the topic needs a reader
   sc("2.4.7", "Focus Visible", "AA", "partial"),
   // partial: focus-visible flags outline suppression; the indicator itself needs eyes
   sc("2.4.8", "Location", "AAA", "manual"),
   sc("2.4.9", "Link Purpose (Link Only)", "AAA", "partial"),
   // generic wording nominates candidates; whether wording explains the destination needs a reader
-  sc("2.4.10", "Section Headings", "AAA", "manual"),
+  sc("2.4.10", "Section Headings", "AAA", "partial"),
+  // partial: section-heading asks about a declared <section> of running text with no heading of its own; where sections begin in undeclared writing stays human
   sc("2.4.11", "Focus Not Obscured (Minimum)", "AA", "partial", "2.2"),
   // covered resting targets are candidates; actual focus/scroll behavior needs review
-  sc("2.4.12", "Focus Not Obscured (Enhanced)", "AAA", "manual", "2.2"),
+  sc("2.4.12", "Focus Not Obscured (Enhanced)", "AAA", "partial", "2.2"),
+  // partial: focus-not-obscured-enhanced reviews any overlap by an opaque fixed panel, 2.4.11's geometry without the containment requirement
   sc("2.4.13", "Focus Appearance", "AAA", "manual", "2.2"),
-  sc("2.5.1", "Pointer Gestures", "A", "manual", "2.1"),
+  sc("2.5.1", "Pointer Gestures", "A", "partial", "2.1"),
+  // partial: pointer-gesture-alternative asks about surfaces whose touch-action hands swipes or every touch to script (carousels, maps, canvases); pointer-event gesture logic with no declaration is invisible
   sc("2.5.2", "Pointer Cancellation", "A", "manual", "2.1"),
   sc("2.5.3", "Label in Name", "A", "manual", "2.1"),
   // manual WHILE label-in-name is parked (re-parked 2026-08-01, see rules/index.js) — 'auto' with no active rule would make this SC vanish from results AND the manual checklist
@@ -7433,20 +7860,23 @@ var wcag22_default = [
   // on-input-navigation flags the inline jump-menu signature; "advised beforehand" stays a human call
   sc("3.2.3", "Consistent Navigation", "AA", "manual"),
   sc("3.2.4", "Consistent Identification", "AA", "manual"),
-  sc("3.2.5", "Change on Request", "AAA", "manual"),
+  sc("3.2.5", "Change on Request", "AAA", "partial"),
+  // partial: meta-refresh-no-exceptions (F40, F41); scripted context changes and pop-ups on load are invisible
   sc("3.2.6", "Consistent Help", "A", "manual", "2.2"),
   sc("3.3.1", "Error Identification", "A", "partial"),
   // error-message-linkage proves broken aria-errormessage targets; only in force when the page is captured mid-error
   sc("3.3.2", "Labels or Instructions", "A", "partial"),
   sc("3.3.3", "Error Suggestion", "AA", "manual"),
-  sc("3.3.4", "Error Prevention (Legal, Financial, Data)", "AA", "manual"),
+  sc("3.3.4", "Error Prevention (Legal, Financial, Data)", "AA", "partial"),
+  // partial: financial-form-confirmation asks once per form that takes card details; legal commitments and data deletion have no markup signature
   sc("3.3.5", "Help", "AAA", "manual"),
   sc("3.3.6", "Error Prevention (All)", "AAA", "manual"),
   sc("3.3.7", "Redundant Entry", "A", "partial", "2.2"),
   // partial: duplicate autocomplete purposes in one form are visible; cross-page processes are not
   sc("3.3.8", "Accessible Authentication (Minimum)", "AA", "partial", "2.2"),
   // partial: auth-field-obstruction catches paste blocking; alternatives need judgment
-  sc("3.3.9", "Accessible Authentication (Enhanced)", "AAA", "manual", "2.2"),
+  sc("3.3.9", "Accessible Authentication (Enhanced)", "AAA", "partial", "2.2"),
+  // partial: auth-field-obstruction's F109 findings apply unchanged (twin tag) and captcha-alternative asks about a CAPTCHA beside a credential, the object-recognition exception 3.3.9 removes
   // 4. Robust (4.1.1 Parsing was removed in WCAG 2.2)
   sc("4.1.2", "Name, Role, Value", "A", "partial"),
   sc("4.1.3", "Status Messages", "AA", "manual", "2.1")
