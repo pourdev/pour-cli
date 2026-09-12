@@ -57,13 +57,18 @@ export async function loadFiltersSource(scriptDir) {
   }).outputFiles[0].text;
 }
 
+// Simulations a headless screenshot cannot show: the glossy screen is the
+// reader's own camera reflected in the glass, and a browser with no camera
+// would only ever paint the room light and a note saying so.
+const NOT_IN_SCREENSHOTS = new Set(['glossyScreen']);
+
 /** Every simulation by name and label, read from the bundle in Node. */
 export function listFilters(filtersSource) {
   (0, eval)(filtersSource);
   const { CSS_FILTERS, SENSORY_FILTERS, MODE_LABELS } = globalThis.PourFilters;
   const label = (name) => MODE_LABELS[name] ?? SENSORY_FILTERS[name]?.label ?? '';
   return {
-    vision: Object.keys(CSS_FILTERS).filter((n) => n !== 'none').map((name) => ({ name, label: label(name) })),
+    vision: Object.keys(CSS_FILTERS).filter((n) => n !== 'none' && !NOT_IN_SCREENSHOTS.has(n)).map((name) => ({ name, label: label(name) })),
     sensory: Object.keys(SENSORY_FILTERS).filter((n) => n !== 'none').map((name) => ({ name, label: label(name) })),
   };
 }
@@ -257,8 +262,13 @@ export async function runAudit(page, engineSource, { tags = WCAG_TAGS, exclude, 
   }, engineSource, { tags, ...(exclude ? { exclude } : {}) }, Boolean(onProgress));
 }
 
-/** A vision or sensory simulation applied to the page, settled. */
+/** A vision or sensory simulation applied to the page, settled. A PNG is
+ *  a still, so the page is told the reader prefers reduced motion first:
+ *  the simulations that move (the aura, which takes half a minute to reach
+ *  its size; the floaters) then draw their settled frame at once, and the
+ *  page's own animations hold still for the shot. */
 export async function applyFilter(page, filtersSource, name, isSensory) {
+  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
   await page.evaluate((source, filter, sensory) => {
     (0, eval)(source);
     const applier = window.PourFilters.createFilterApplier(document);
