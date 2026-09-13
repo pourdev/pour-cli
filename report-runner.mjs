@@ -111,13 +111,13 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.122",
-  // Release: engine 1.42.2, a question for a focusable control hidden inside another control, and a faster orientation check on stylesheet-heavy pages.
+  version: "1.2.123",
+  // Release: engine 1.42.3, contrast read through positioned overlays, no names from generated content on SVG elements, nested controls found through shadow trees; the benchmark's one-command pipeline and verdict reports.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
-    version: "1.42.2"
-    // Nested controls: a negative-tabindex control under aria-hidden inside an ARIA widget is now a question, not silence; orientation lock asks each media condition once per audit.
+    version: "1.42.3"
+    // Contrast: the hit-test outranks the ancestor walk for image backdrops (a positioned card over a gradient section), off screen it asks; accessible names ignore ::before/::after on SVG elements; nested controls walk the flat tree and follow a shadow host's negative tabindex.
   },
   extension: {
     // Appended to productName for the manifest name, which IS the store
@@ -177,6 +177,38 @@ function collectRoots(context) {
 }
 function flatTreeParent(node) {
   return node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host ?? null;
+}
+function flatDescendants(element) {
+  const found = [];
+  const seen2 = /* @__PURE__ */ new Set();
+  const visit = (scope) => {
+    for (const el of scope.querySelectorAll("*")) {
+      if (seen2.has(el)) continue;
+      seen2.add(el);
+      found.push(el);
+      if (el.shadowRoot) visit(el.shadowRoot);
+      if (el.tagName === "SLOT") {
+        for (const assigned of el.assignedElements({ flatten: true })) {
+          if (!seen2.has(assigned)) {
+            seen2.add(assigned);
+            found.push(assigned);
+          }
+          visit(assigned);
+        }
+      }
+    }
+  };
+  if (element.shadowRoot) visit(element.shadowRoot);
+  visit(element);
+  return found;
+}
+function outOfSequentialFocus(element, within = null) {
+  const negative = (el) => el.hasAttribute("tabindex") && el.tabIndex < 0;
+  if (negative(element)) return true;
+  for (let node = flatTreeParent(element); node && node !== within; node = flatTreeParent(node)) {
+    if (node.shadowRoot && negative(node)) return true;
+  }
+  return false;
 }
 var attributesGetter = typeof Element !== "undefined" ? Object.getOwnPropertyDescriptor(Element.prototype, "attributes")?.get : null;
 function attributesOf(element) {
@@ -753,6 +785,7 @@ function visibleContentText(element, includeHidden, inLabelledBy, visited) {
   return generatedContent(element, "::before", includeHidden) + textFromNodes(nodes, includeHidden, inLabelledBy, visited) + generatedContent(element, "::after", includeHidden);
 }
 function generatedContent(element, pseudo, includeHidden) {
+  if (element.namespaceURI === "http://www.w3.org/2000/svg") return "";
   const style = getComputedStyle(element, pseudo);
   if (!includeHidden && (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse")) return "";
   const content = style.content;
@@ -2607,6 +2640,46 @@ function unaccountedScrim(element, imageCarrier) {
     return color && color.a > 0;
   });
 }
+function coveringLayer(element, imageCarrier) {
+  const doc = element.ownerDocument;
+  const win = doc.defaultView;
+  if (typeof doc.elementsFromPoint !== "function") return void 0;
+  const point = textSamplePoint(element);
+  if (!point || point.x < 0 || point.y < 0 || point.x >= win.innerWidth || point.y >= win.innerHeight) return void 0;
+  const stack = doc.elementsFromPoint(point.x, point.y);
+  const start = stack.indexOf(element);
+  if (start === -1) return void 0;
+  const overlays = [];
+  for (const layer of stack.slice(start + 1)) {
+    if (layer === imageCarrier) return null;
+    if (layer.contains(element)) {
+      const own = parseColor(getComputedStyle(layer).backgroundColor);
+      if (own && own.a > 0 && own.a < 1) overlays.push(own);
+      continue;
+    }
+    if (layer.shadowRoot) return void 0;
+    if (/^(img|video|canvas|picture)$/i.test(layer.tagName)) return { covered: layer };
+    const style = getComputedStyle(layer);
+    if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage)) return { image: layer, css: style.backgroundImage, overlays };
+    const color = parseColor(style.backgroundColor);
+    if (color && color.a >= 1) return { covered: layer };
+  }
+  return null;
+}
+function positionedPaintInside(carrier, element) {
+  const point = textSamplePoint(element);
+  if (!point) return false;
+  for (const node of carrier.querySelectorAll("*")) {
+    if (node.contains(element) || element.contains(node)) continue;
+    const style = getComputedStyle(node);
+    if (style.position !== "absolute" && style.position !== "fixed") continue;
+    const paints = style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage) || (parseColor(style.backgroundColor)?.a ?? 0) >= 1;
+    if (!paints || node.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true }) === false) continue;
+    const box = node.getBoundingClientRect();
+    if (point.x >= box.left && point.x < box.right && point.y >= box.top && point.y < box.bottom) return true;
+  }
+  return false;
+}
 var PAINTS_NOTHING = Symbol("fully transparent image layer");
 function paintUnderImage(carrier) {
   const color = parseColor(getComputedStyle(carrier).backgroundColor);
@@ -2901,7 +2974,18 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
         }
         foreground = { ...foreground, a: foreground.a * opacity };
       }
-      const imageSource = backgroundImageSource(element);
+      let imageSource = backgroundImageSource(element);
+      if (imageSource && imageSource.element !== element) {
+        const cover = coveringLayer(element, imageSource.element);
+        if (cover?.image) imageSource = { css: cover.css, element: cover.image, overlays: cover.overlays };
+        else if (cover) imageSource = null;
+        else if (cover === void 0 && positionedPaintInside(imageSource.element, element)) {
+          return {
+            status: "incomplete",
+            message: "This text sits in a section with a background image or gradient, and a positioned element inside that section paints its own background where the text is. Which of the two is behind the glyphs depends on paint order, and the text is off screen where the browser cannot be asked, so check the contrast by eye."
+          };
+        }
+      }
       if (imageSource) {
         if (ownMultiply) return { status: "incomplete", message: "This text multiplies against an image or gradient. Its contrast depends on the pixels behind each glyph; check it by eye." };
         const { relation, intrinsic, dimensionless, isGradient, sizedSmall, paint } = await imageVsText(imageSource, element, doc);
@@ -3691,13 +3775,21 @@ var nested_interactive_default = {
   selector: INTERACTIVE,
   evaluate(element, { isRendered }) {
     const NATIVE = "a[href], button, input, select, textarea, summary, audio[controls], video[controls]";
-    const candidates = [...element.querySelectorAll(INTERACTIVE)].filter((el) => !el.matches(":disabled") && !isInert(el) && !(el.tagName === "INPUT" && el.type === "hidden") && isRendered(el) && !(el.closest('[aria-hidden="true"]') && !(el.hasAttribute("tabindex") && el.tabIndex < 0)) && (el.matches(NATIVE) || el.hasAttribute("tabindex")));
-    const nested = candidates.find((el) => !(el.hasAttribute("tabindex") && el.tabIndex < 0)) ?? candidates[0];
+    const candidates = flatDescendants(element).filter((el) => el.matches?.(INTERACTIVE) && !el.matches(":disabled") && !isInert(el) && !(el.tagName === "INPUT" && el.type === "hidden") && isRendered(el) && !(el.closest('[aria-hidden="true"]') && !outOfSequentialFocus(el, element)) && (el.matches(NATIVE) || el.hasAttribute("tabindex")));
+    const nested = candidates.find((el) => !outOfSequentialFocus(el, element)) ?? candidates[0];
     if (!nested) return { status: "pass" };
-    if (nested.hasAttribute("tabindex") && nested.tabIndex < 0 && !element.matches("a[href], button")) {
+    if (outOfSequentialFocus(nested, element) && !element.matches("a[href], button")) {
+      let host2 = null;
+      for (let node = flatTreeParent(nested); node && node !== element; node = flatTreeParent(node)) {
+        if (node.shadowRoot && node.hasAttribute("tabindex") && node.tabIndex < 0) {
+          host2 = node;
+          break;
+        }
+      }
+      const child = `<${nested.tagName.toLowerCase()}>`;
       return {
         status: "incomplete",
-        message: nested.closest('[aria-hidden="true"]') ? `This control contains an element (<${nested.tagName.toLowerCase()}>) that is hidden from assistive technology but can still receive focus from a click or a script. Focus landing there lands on content a screen reader cannot see. Check whether it can take focus, and if it can, remove it from focus or from aria-hidden.` : `This control contains an element (<${nested.tagName.toLowerCase()}>) with a negative tabindex. It can still receive focus. Check that both controls expose the intended name and role, and that focusing and activating the child works correctly.`
+        message: host2 ? `This control contains a custom element (<${host2.tagName.toLowerCase()}>) whose shadow tree holds another control (${child}). The host's negative tabindex keeps it out of the tab order, but a click or a script can still focus it. Check that both controls expose the intended name and role, and that focusing and activating the child works correctly.` : nested.closest('[aria-hidden="true"]') ? `This control contains an element (${child}) that is hidden from assistive technology but can still receive focus from a click or a script. Focus landing there lands on content a screen reader cannot see. Check whether it can take focus, and if it can, remove it from focus or from aria-hidden.` : `This control contains an element (${child}) with a negative tabindex. It can still receive focus. Check that both controls expose the intended name and role, and that focusing and activating the child works correctly.`
       };
     }
     if (element.tagName === "SUMMARY") {
