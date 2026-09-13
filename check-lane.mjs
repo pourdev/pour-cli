@@ -1,4 +1,4 @@
-/*! pour check lane 1.42.1 | MIT | https://pour.dev */
+/*! pour check lane 1.42.2 | MIT | https://pour.dev */
 
 // src/vscode/audit.js
 import jsdom from "jsdom";
@@ -1228,18 +1228,18 @@ function quarterTurn(style, win) {
   }
   return Math.abs((angle % 180 + 180) % 180 - 90) < 0.01;
 }
-function scanRules(rules, orientationContext, active, state, doc) {
+function scanRules(rules, orientationContext, active, state, doc, query) {
   const win = doc.defaultView;
   for (const rule of rules ?? []) {
     if (rule.type === win.CSSRule.SUPPORTS_RULE) {
-      if (win.CSS.supports(rule.conditionText)) scanRules(rule.cssRules, orientationContext, active, state, doc);
+      if (query.supports(rule.conditionText)) scanRules(rule.cssRules, orientationContext, active, state, doc, query);
       continue;
     }
     if (rule.type === win.CSSRule.MEDIA_RULE) {
       const condition = rule.conditionText ?? rule.media.mediaText;
       const orientation = /orientation\s*:\s*(portrait|landscape)/i.exec(condition)?.[1];
       const context = orientation ? { condition, orientation } : orientationContext;
-      scanRules(rule.cssRules, context, active && win.matchMedia(condition).matches, state, doc);
+      scanRules(rule.cssRules, context, active && query.media(condition), state, doc, query);
       continue;
     }
     if (orientationContext && rule.style) {
@@ -1267,7 +1267,8 @@ function scanRules(rules, orientationContext, active, state, doc) {
       orientationContext,
       active && rule.conditionText === void 0,
       state,
-      doc
+      doc,
+      query
     );
   }
 }
@@ -1285,17 +1286,29 @@ var orientation_default = {
     const doc = element.ownerDocument;
     const win = doc.defaultView;
     const state = /* @__PURE__ */ new Map();
+    const mediaAnswers = /* @__PURE__ */ new Map();
+    const supportsAnswers = /* @__PURE__ */ new Map();
+    const query = {
+      media: (condition) => {
+        if (!mediaAnswers.has(condition)) mediaAnswers.set(condition, win.matchMedia(condition).matches);
+        return mediaAnswers.get(condition);
+      },
+      supports: (condition) => {
+        if (!supportsAnswers.has(condition)) supportsAnswers.set(condition, win.CSS.supports(condition));
+        return supportsAnswers.get(condition);
+      }
+    };
     for (const sheet of doc.styleSheets) {
       if (sheet.disabled) continue;
       const media = sheet.media?.mediaText;
-      if (media && !win.matchMedia(media).matches) continue;
+      if (media && !query.media(media)) continue;
       let rules;
       try {
         rules = sheet.cssRules;
       } catch {
         continue;
       }
-      scanRules(rules, null, true, state, doc);
+      scanRules(rules, null, true, state, doc, query);
     }
     const findings = [];
     for (const [key, entry] of state) {
@@ -3632,13 +3645,13 @@ var nested_interactive_default = {
   selector: INTERACTIVE,
   evaluate(element, { isRendered: isRendered2 }) {
     const NATIVE = "a[href], button, input, select, textarea, summary, audio[controls], video[controls]";
-    const candidates = [...element.querySelectorAll(INTERACTIVE)].filter((el) => !el.matches(":disabled") && !isInert(el) && !(el.tagName === "INPUT" && el.type === "hidden") && isRendered2(el) && !el.closest('[aria-hidden="true"]') && (el.matches(NATIVE) || el.hasAttribute("tabindex")));
+    const candidates = [...element.querySelectorAll(INTERACTIVE)].filter((el) => !el.matches(":disabled") && !isInert(el) && !(el.tagName === "INPUT" && el.type === "hidden") && isRendered2(el) && !(el.closest('[aria-hidden="true"]') && !(el.hasAttribute("tabindex") && el.tabIndex < 0)) && (el.matches(NATIVE) || el.hasAttribute("tabindex")));
     const nested = candidates.find((el) => !(el.hasAttribute("tabindex") && el.tabIndex < 0)) ?? candidates[0];
     if (!nested) return { status: "pass" };
     if (nested.hasAttribute("tabindex") && nested.tabIndex < 0 && !element.matches("a[href], button")) {
       return {
         status: "incomplete",
-        message: `This control contains an element (<${nested.tagName.toLowerCase()}>) with a negative tabindex. It can still receive focus. Check that both controls expose the intended name and role, and that focusing and activating the child works correctly.`
+        message: nested.closest('[aria-hidden="true"]') ? `This control contains an element (<${nested.tagName.toLowerCase()}>) that is hidden from assistive technology but can still receive focus from a click or a script. Focus landing there lands on content a screen reader cannot see. Check whether it can take focus, and if it can, remove it from focus or from aria-hidden.` : `This control contains an element (<${nested.tagName.toLowerCase()}>) with a negative tabindex. It can still receive focus. Check that both controls expose the intended name and role, and that focusing and activating the child works correctly.`
       };
     }
     if (element.tagName === "SUMMARY") {
