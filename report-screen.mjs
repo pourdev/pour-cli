@@ -5444,14 +5444,14 @@ var target_size_enhanced_default = createTargetSizeRule({
   spacingException: false
 });
 
-// src/engine/rules/wcag/4.1.2-dialog-name.js
+// src/engine/rules/best-practice/dialog-name.js
 var dialog_name_default = {
   id: "dialog-name",
   name: "Dialog names",
   impact: "serious",
-  tags: ["wcag2a", "wcag412"],
-  help: "Dialogs must have an accessible name",
-  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
+  tags: ["best-practice"],
+  help: "Dialogs should have an accessible name",
+  helpUrl: "https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/",
   // Default visibility filter: a closed <dialog> is display:none, so only
   // dialogs the user can actually encounter are judged.
   selector: 'dialog, [role="dialog"], [role="alertdialog"]',

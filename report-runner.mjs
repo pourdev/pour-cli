@@ -111,13 +111,13 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.118",
-  // Release: engine 1.42.0 gives twelve more WCAG criteria a pointer, from custom gestures and unheaded sections to payment forms and login CAPTCHAs, and the site lists every criterion with its rules.
+  version: "1.2.119",
+  // Release: engine 1.42.1 reports an unnamed dialog as best practice instead of a WCAG 4.1.2 failure, since the criterion covers controls and a dialog is their container.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
-    version: "1.42.0"
-    // Twelve more criteria arrive with pointers: timed refreshes and template headings are asserted; obscured focus, missing audio description, justified text, unheaded sections, custom gestures, payment forms, login CAPTCHAs and landmark-less pages are asked about.
+    version: "1.42.1"
+    // An unnamed dialog moves from WCAG 4.1.2 to best practice: ARIA requires the name, but 4.1.2 covers controls and a dialog is their container.
   },
   extension: {
     // Appended to productName for the manifest name, which IS the store
@@ -159,7 +159,7 @@ var project_config_default = {
     // stamp under reports/benchmark/ (data-<stamp>.json). Every figure in
     // the copy is derived from that file at build time (scripts/lib/facts.js),
     // so quoting a new run is one line here, never a hunt through prose.
-    published: "2026-09-11-2339"
+    published: "2026-09-12-1701"
   }
 };
 
@@ -5602,14 +5602,14 @@ var target_size_enhanced_default = createTargetSizeRule({
   spacingException: false
 });
 
-// src/engine/rules/wcag/4.1.2-dialog-name.js
+// src/engine/rules/best-practice/dialog-name.js
 var dialog_name_default = {
   id: "dialog-name",
   name: "Dialog names",
   impact: "serious",
-  tags: ["wcag2a", "wcag412"],
-  help: "Dialogs must have an accessible name",
-  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
+  tags: ["best-practice"],
+  help: "Dialogs should have an accessible name",
+  helpUrl: "https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/",
   // Default visibility filter: a closed <dialog> is display:none, so only
   // dialogs the user can actually encounter are judged.
   selector: 'dialog, [role="dialog"], [role="alertdialog"]',
@@ -10006,7 +10006,7 @@ var isSite = mode === "site";
 var workers = Number(flagValue("--workers", isSite ? 4 : 8));
 var politeMs = Number(flagValue("--pause", isSite ? 1e3 : 250));
 var count = flagValue("--count") ? Number(flagValue("--count")) : Infinity;
-var max = Number(flagValue("--max", 5e3));
+var max = Number(flagValue("--max", 100));
 var maxDepth = Number(flagValue("--depth", Infinity));
 var sameHost = hasFlag("--same-host");
 var [vw, vh] = String(flagValue("--viewport", "1440x900")).split("x").map(Number);

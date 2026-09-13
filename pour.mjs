@@ -124,7 +124,7 @@ Options:
                        live progress screen in the browser and a standalone
                        HTML report at the end. Ctrl+C stops cleanly; the
                        same command resumes. Options: --max <n> pages
-                       (default 5000), --workers <n> (4 for a site, 8 for a
+                       (default 100), --workers <n> (4 for a site, 8 for a
                        list), --pause <ms> between pages per worker,
                        --depth <n>, --same-host, --viewport WxH, --load
                        <ms> to let a page load (default 10000), --timeout
