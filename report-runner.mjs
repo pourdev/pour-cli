@@ -111,8 +111,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.119",
-  // Release: engine 1.42.1 reports an unnamed dialog as best practice instead of a WCAG 4.1.2 failure, since the criterion covers controls and a dialog is their container.
+  version: "1.2.120",
+  // Release: links that leave the panel and the bookmarklet lose the external-link arrow, keep their spoken "(opens in a new tab)" and carry rel="external"; engine unchanged at 1.42.1.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
@@ -8951,8 +8951,6 @@ th.nw{white-space:nowrap}
 td.rank-dot{white-space:nowrap}
 td.rank-dot .dot{margin:0 .5rem 0 0}
 .nsfw{color:var(--muted)}
-.ext-icon{display:inline-block;width:.78em;height:.78em;margin-left:.28em;vertical-align:.05em}
-.ext-tail{white-space:nowrap}
 .visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}a,button,summary{-webkit-tap-highlight-color:transparent}a:active,button:active,summary:active{opacity:.72}
 .badge{display:inline-block;margin-left:.4rem;padding:0 .4rem;border-radius:4px;font:700 .65rem/1.5 var(--display);letter-spacing:.08em;vertical-align:middle;background:var(--sev-critical-bg);color:var(--sev-critical-fg);cursor:default}
 th .sort{all:unset;cursor:pointer;font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit;padding:.2rem 0;white-space:nowrap}
@@ -8975,7 +8973,6 @@ html{color-scheme:light;background:#fff}
 body{background:#fff;color:#000}
 .top{position:static;background:#fff}
 .top nav,.menu-toggle,.sort-icon,.skip,.player,.consent-banner,.consent-reopen{display:none}
-.ext-tail svg{display:none}
 .table-wrap{overflow:visible}
 table{font-size:.66rem}
 th,td{padding:.4rem .35rem}
@@ -8988,14 +8985,8 @@ details.group>summary{list-style:none}
 details.group>summary::-webkit-details-marker{display:none}
 }
 `;
-var EXT_ICON = '<svg class="ext-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>';
 function decorateExternalLinks(html) {
-  return html.replace(/<a href="([^"]*)" rel="external">([^<]*)<\/a>/g, (m, href, text) => {
-    const match = /^(.*?)(\S+)\s*$/s.exec(text);
-    const head = match ? match[1] : "";
-    const last = match ? match[2] : text;
-    return `<a href="${href}" rel="external noopener" target="_blank">${head}<span class="ext-tail">${last}${EXT_ICON}<span class="visually-hidden"> (opens in a new tab)</span></span></a>`;
-  });
+  return html.replace(/<a href="([^"]*)" rel="external">([^<]*)<\/a>/g, (m, href, text) => `<a href="${href}" rel="external noopener" target="_blank">${text}<span class="visually-hidden"> (opens in a new tab)</span></a>`);
 }
 function shell({ title, description, eyebrow, heading, lede, nav, stats, viz = "", body, generated, share = null, footnote = null, indexable = false, engine = null }) {
   lede = decorateExternalLinks(lede);

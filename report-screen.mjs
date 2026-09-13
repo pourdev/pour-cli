@@ -8207,8 +8207,6 @@ th.nw{white-space:nowrap}
 td.rank-dot{white-space:nowrap}
 td.rank-dot .dot{margin:0 .5rem 0 0}
 .nsfw{color:var(--muted)}
-.ext-icon{display:inline-block;width:.78em;height:.78em;margin-left:.28em;vertical-align:.05em}
-.ext-tail{white-space:nowrap}
 .visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}a,button,summary{-webkit-tap-highlight-color:transparent}a:active,button:active,summary:active{opacity:.72}
 .badge{display:inline-block;margin-left:.4rem;padding:0 .4rem;border-radius:4px;font:700 .65rem/1.5 var(--display);letter-spacing:.08em;vertical-align:middle;background:var(--sev-critical-bg);color:var(--sev-critical-fg);cursor:default}
 th .sort{all:unset;cursor:pointer;font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit;padding:.2rem 0;white-space:nowrap}
@@ -8231,7 +8229,6 @@ html{color-scheme:light;background:#fff}
 body{background:#fff;color:#000}
 .top{position:static;background:#fff}
 .top nav,.menu-toggle,.sort-icon,.skip,.player,.consent-banner,.consent-reopen{display:none}
-.ext-tail svg{display:none}
 .table-wrap{overflow:visible}
 table{font-size:.66rem}
 th,td{padding:.4rem .35rem}
@@ -8408,7 +8405,7 @@ var page = `<!doctype html>
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const n = (v) => Number(v || 0).toLocaleString('en-US');
   const dhm = (s) => { s = Math.round(s); const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? d + 'd ' + h + 'h ' + m + 'm' : h ? h + 'h ' + m + 'm' : m + 'm ' + String(s % 60).padStart(2, '0') + 's'; };
-  const link = (href, text, nsfw) => (href && !nsfw) ? '<a href="' + esc(href) + '" target="_blank" rel="noopener">' + esc(text) + '</a>' : esc(text) + (nsfw ? '<span class="badge" title="Adult site: the name is withheld and not linked">NSFW</span>' : '');
+  const link = (href, text, nsfw) => (href && !nsfw) ? '<a href="' + esc(href) + '" target="_blank" rel="external noopener">' + esc(text) + '</a>' : esc(text) + (nsfw ? '<span class="badge" title="Adult site: the name is withheld and not linked">NSFW</span>' : '');
   const monthName = (ym) => new Date(ym + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
   async function tick() {
     let d; try { d = await (await fetch('/api/status', { cache: 'no-store' })).json(); } catch { return; }
