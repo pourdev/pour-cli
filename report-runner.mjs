@@ -111,8 +111,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.120",
-  // Release: links that leave the panel and the bookmarklet lose the external-link arrow, keep their spoken "(opens in a new tab)" and carry rel="external"; engine unchanged at 1.42.1.
+  version: "1.2.121",
+  // Release: two new simulations, Fingertip Touch (the pointer as a fingertip, taps landing by share) and Screen Magnifier (400%, with markers for changes out of view); engine unchanged at 1.42.1.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
