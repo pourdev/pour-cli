@@ -3,7 +3,7 @@
 // scripts/report/run.mjs
 import fs5 from "node:fs";
 import path5 from "node:path";
-import readline2 from "node:readline";
+import readline3 from "node:readline";
 import dns from "node:dns/promises";
 import { spawn, execFile } from "node:child_process";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -54,6 +54,195 @@ async function acceptConsent(page, how = true) {
     if (round === 0) var first = clicked;
   }
   return first ?? null;
+}
+
+// scripts/cli/auth.mjs
+import process2 from "node:process";
+import readline from "node:readline";
+var SECOND_LEVEL = /* @__PURE__ */ new Set(["co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go"]);
+function siteOf(hostname) {
+  const host2 = String(hostname).toLowerCase().replace(/^\.+/, "").replace(/^\[|\]$/g, "");
+  if (/^[\d.]+$/.test(host2) || host2.includes(":")) return host2;
+  const labels = host2.replace(/^www\./, "").split(".");
+  if (labels.length <= 2) return labels.join(".");
+  const [tld, sld] = [labels.at(-1), labels.at(-2)];
+  return tld.length === 2 && SECOND_LEVEL.has(sld) ? labels.slice(-3).join(".") : labels.slice(-2).join(".");
+}
+var urlOnSite = (href, site2) => {
+  try {
+    return siteOf(new URL(href).hostname) === site2;
+  } catch {
+    return false;
+  }
+};
+async function captureAuthState(browser2, url) {
+  const site2 = siteOf(new URL(url).hostname);
+  const pages = await browser2.pages();
+  const first = pages[0] ?? await browser2.newPage();
+  const cdp = await first.createCDPSession();
+  const { cookies: all } = await cdp.send("Network.getAllCookies");
+  await cdp.detach().catch(() => {
+  });
+  const cookies = all.filter((c) => siteOf(c.domain) === site2);
+  const origins = {};
+  for (const page of pages) {
+    let origin;
+    try {
+      origin = new URL(page.url()).origin;
+    } catch {
+      continue;
+    }
+    if (!/^https?:/.test(origin) || !urlOnSite(origin, site2)) continue;
+    const items = await page.evaluate(() => {
+      const out = {};
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          out[k] = localStorage.getItem(k);
+        }
+      } catch {
+      }
+      return out;
+    }).catch(() => null);
+    if (items && Object.keys(items).length) origins[origin] = { ...origins[origin] ?? {}, ...items };
+  }
+  return { site: site2, cookies, origins };
+}
+var settable = (c) => {
+  const out = { name: c.name, value: c.value, domain: c.domain, path: c.path ?? "/", secure: !!c.secure, httpOnly: !!c.httpOnly };
+  if (c.sameSite) out.sameSite = c.sameSite;
+  if (typeof c.expires === "number" && c.expires > 0) out.expires = c.expires;
+  if (c.priority) out.priority = c.priority;
+  if (c.sourceScheme) out.sourceScheme = c.sourceScheme;
+  if (typeof c.sourcePort === "number") out.sourcePort = c.sourcePort;
+  return out;
+};
+async function applyAuthState(page, state) {
+  if (state.cookies?.length) {
+    const cdp = await page.createCDPSession();
+    await cdp.send("Network.setCookies", { cookies: state.cookies.map(settable) });
+    await cdp.detach().catch(() => {
+    });
+  }
+  if (state.origins && Object.keys(state.origins).length) {
+    await page.evaluateOnNewDocument((origins) => {
+      const items = origins[location.origin];
+      if (!items) return;
+      try {
+        for (const [k, v] of Object.entries(items)) if (localStorage.getItem(k) === null) localStorage.setItem(k, v);
+      } catch {
+      }
+    }, state.origins);
+  }
+}
+function parseHeaders(values) {
+  const headers = {};
+  for (const raw of [].concat(values ?? []).filter((v) => typeof v === "string")) {
+    const at = raw.indexOf(":");
+    if (at < 1) throw new Error(`--header expects "Name: value", got "${raw}"`);
+    headers[raw.slice(0, at).trim()] = raw.slice(at + 1).trim();
+  }
+  return headers;
+}
+function parseCookies(values) {
+  return [].concat(values ?? []).filter((v) => typeof v === "string").map((raw) => {
+    const at = raw.indexOf("=");
+    if (at < 1) throw new Error(`--cookie expects name=value, got "${raw}"`);
+    return { name: raw.slice(0, at).trim(), value: raw.slice(at + 1) };
+  });
+}
+function parseBasic(value) {
+  if (typeof value !== "string" || !value.includes(":")) throw new Error("--basic expects user:password");
+  const at = value.indexOf(":");
+  return { username: value.slice(0, at), password: value.slice(at + 1) };
+}
+async function applyRequestAuth(page, { basic, headers, cookies, url } = {}) {
+  if (cookies?.length && url) await page.setCookie(...cookies.map((c) => ({ ...c, url })));
+  const extra = headers && Object.keys(headers).length ? headers : null;
+  if (!basic && !extra) return;
+  const site2 = siteOf(new URL(url).hostname);
+  const cdp = await page.createCDPSession();
+  const answered = /* @__PURE__ */ new Set();
+  cdp.on("Fetch.requestPaused", ({ requestId, request }) => {
+    const params = { requestId };
+    if (extra && urlOnSite(request.url, site2)) params.headers = Object.entries({ ...request.headers, ...extra }).map(([name, value]) => ({ name, value }));
+    cdp.send("Fetch.continueRequest", params).catch(() => {
+    });
+  });
+  cdp.on("Fetch.authRequired", ({ requestId, request, authChallenge }) => {
+    const ours = basic && authChallenge?.source !== "Proxy" && urlOnSite(request.url, site2) && !answered.has(requestId);
+    if (ours) answered.add(requestId);
+    const authChallengeResponse = ours ? { response: "ProvideCredentials", username: basic.username, password: basic.password } : { response: "CancelAuth" };
+    cdp.send("Fetch.continueWithAuth", { requestId, authChallengeResponse }).catch(() => {
+    });
+  });
+  await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }], handleAuthRequests: true });
+}
+var looksLikeSignIn = (page, target2) => page.evaluate((wanted) => {
+  let here;
+  let want;
+  try {
+    here = new URL(location.href);
+    want = new URL(wanted);
+  } catch {
+    return false;
+  }
+  const strip2 = (p) => p.replace(/\/+$/, "");
+  const moved = here.origin !== want.origin || strip2(here.pathname) !== strip2(want.pathname);
+  if (!moved) return false;
+  const address = /(^|\/)(log-?in|sign-?in|signin|auth|sso|oauth|session\/new|account\/login|users\/sign_in|wp-login\.php)(\/|$|\?|\.)/i.test(here.pathname + here.search);
+  const title = /\b(log ?in|sign ?in)\b/i.test(document.title || "");
+  const password = !!document.querySelector('input[type="password"]');
+  return password || address || title;
+}, target2).catch(() => false);
+async function launchSignInBrowser(puppeteer2, { executablePath, insecure = false, args: args2 = [] } = {}) {
+  const opts = {
+    headless: false,
+    ignoreDefaultArgs: ["--enable-automation"],
+    args: ["--disable-blink-features=AutomationControlled", "--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable", ...args2]
+  };
+  if (insecure) opts.acceptInsecureCerts = true;
+  if (executablePath) return puppeteer2.launch({ ...opts, executablePath: String(executablePath) });
+  for (const channel2 of ["chrome", "chrome-beta", "msedge"]) {
+    try {
+      return await puppeteer2.launch({ ...opts, channel: channel2 });
+    } catch {
+    }
+  }
+  if (process2.env.PUPPETEER_EXECUTABLE_PATH) return puppeteer2.launch({ ...opts, executablePath: process2.env.PUPPETEER_EXECUTABLE_PATH });
+  try {
+    return await puppeteer2.launch(opts);
+  } catch {
+  }
+  throw new Error("no Chrome found to sign in with: install Google Chrome, or point --browser at a Chrome/Chromium binary");
+}
+async function signIn({ launch, url, viewport, say = (t) => console.error(t) }) {
+  const browser2 = await launch();
+  try {
+    const page = (await browser2.pages())[0] ?? await browser2.newPage();
+    if (viewport) await page.setViewport(viewport);
+    await page.goto(url, { waitUntil: "load", timeout: 6e4 }).catch(() => {
+    });
+    say(`Sign in to ${new URL(url).hostname} in the browser window, then press Enter here once you are back on the site. (Do not close the window: the session is read from it, and kept only for this run.)`);
+    const closed = new Promise((_, reject) => browser2.once("disconnected", () => reject(new Error("the browser window was closed before the session could be read; sign in and press Enter in the terminal instead of closing it"))));
+    const entered = process2.stdin.isTTY ? new Promise((resolve) => {
+      const rl = readline.createInterface({ input: process2.stdin, output: process2.stderr });
+      rl.question("", () => {
+        rl.close();
+        resolve();
+      });
+    }) : new Promise((resolve) => {
+      say("No terminal to press Enter in: waiting 2 minutes for the sign-in, then reading the session.");
+      setTimeout(resolve, 12e4);
+    });
+    await Promise.race([entered, closed]);
+    const state = await captureAuthState(browser2, url);
+    if (!state.cookies.length && !Object.keys(state.origins).length) say(`No session for ${state.site} was found in the window (was it still on the sign-in provider's page?). The run goes on signed out.`);
+    return state;
+  } finally {
+    await browser2.close().catch(() => {
+    });
+  }
 }
 
 // scripts/cli/lib.mjs
@@ -181,8 +370,8 @@ function flatTreeParent(node) {
 function flatDescendants(element) {
   const found = [];
   const seen2 = /* @__PURE__ */ new Set();
-  const visit = (scope) => {
-    for (const el of scope.querySelectorAll("*")) {
+  const visit = (scope2) => {
+    for (const el of scope2.querySelectorAll("*")) {
       if (seen2.has(el)) continue;
       seen2.add(el);
       found.push(el);
@@ -5440,13 +5629,13 @@ function composedDescendants(element) {
     }
   };
   for (let i = 0; i < pending.length; i++) {
-    const scope = pending[i];
-    if (scope.shadowRoot) pending.push(scope.shadowRoot);
-    if (scope.tagName === "SLOT") for (const assigned of scope.assignedElements({ flatten: true })) {
+    const scope2 = pending[i];
+    if (scope2.shadowRoot) pending.push(scope2.shadowRoot);
+    if (scope2.tagName === "SLOT") for (const assigned of scope2.assignedElements({ flatten: true })) {
       enter(assigned);
       pending.push(assigned);
     }
-    for (const el of scope.querySelectorAll("*")) enter(el);
+    for (const el of scope2.querySelectorAll("*")) enter(el);
   }
   return found;
 }
@@ -8598,7 +8787,7 @@ function writeList(file, rows) {
 // scripts/report/render.mjs
 import fs4 from "node:fs";
 import path4 from "node:path";
-import readline from "node:readline";
+import readline2 from "node:readline";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import crypto from "node:crypto";
 
@@ -8728,7 +8917,8 @@ var REASON_LABEL = {
   robots: "are disallowed by the site's robots.txt",
   timeout: "did not finish inside the time allowed",
   error: "failed during the audit",
-  tagged: "were tagged unavailable by an earlier run and not tried"
+  tagged: "were tagged unavailable by an earlier run and not tried",
+  "sign-in": "sent the crawler to a sign-in form instead of the page"
 };
 var WHO = {
   "color-contrast": ["Low-contrast text", "people with low vision, and anyone reading on a dim screen or in sunlight"],
@@ -9715,7 +9905,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
   const tally2 = createTally();
   const held = /* @__PURE__ */ new Map();
   let total = 0;
-  const rl = readline.createInterface({ input: fs4.createReadStream(path4.join(runDir2, "progress.jsonl")), crlfDelay: Infinity });
+  const rl = readline2.createInterface({ input: fs4.createReadStream(path4.join(runDir2, "progress.jsonl")), crlfDelay: Infinity });
   const latest = /* @__PURE__ */ new Map();
   const retried = /* @__PURE__ */ new Map();
   let recovered2 = 0;
@@ -9781,7 +9971,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
       title = `${escapeHtml(status.site)}, audited page by page \xB7 pour`;
       description = `The pour engine over ${pagesOf(s.pages)} of ${status.site}: how many fail WCAG 2.2 AA, what fails most, and where on each page.`;
       intro = `${engineLead} ran over ${pagesOf(s.pages)} of <a href="${escapeHtml(status.start)}" rel="external">${escapeHtml(status.site)}</a>,
-          following links from the front page${status.sameHost ? "" : " across the site and its subdomains"}. Each page was
+          following links ${status.scope ? `under <code>${escapeHtml(status.scope)}/</code>` : `from the front page${status.sameHost ? "" : " across the site and its subdomains"}`}. Each page was
           loaded once in a desktop window and checked against WCAG&nbsp;2.2 AA. No scrolling,
           no clicking. The numbers count what the engine could prove; checks that need a person are
           not included.${partial ? " The run is not finished; these are the numbers so far." : ""}`;
@@ -9830,7 +10020,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
         <h2 id="method-title">Method</h2>
         <p>
           The crawl started at <a href="${escapeHtml(status.start)}" rel="external">${escapeHtml(status.start)}</a> and followed
-          every link to a page on ${status.sameHost ? "the same host" : `${escapeHtml(status.site)} or its subdomains`}, stopping at ${int(status.count)} pages.
+          every link to a page on ${status.sameHost ? "the same host" : `${escapeHtml(status.site)} or its subdomains`}${status.scope ? ` under <code>${escapeHtml(status.scope)}/</code>` : ""}, stopping at ${int(status.count)} pages.
           It found ${int(status.discovered ?? 0)} addresses${status.queued ? ` and left ${int(status.queued)} unvisited` : ""}.
           ${status.robots?.fetched ? `The site's robots.txt (${int(status.robots.rules)} rule${status.robots.rules === 1 ? "" : "s"}) was respected.` : "No robots.txt could be read."}
           Links to files were not followed. Tracking parameters were removed so a page was not counted twice.
@@ -10071,7 +10261,8 @@ if (process.argv[1] === fileURLToPath2(import.meta.url) && /render\.mjs$/.test(p
 var homeDir = path5.dirname(fileURLToPath3(import.meta.url));
 var packaged = fs5.existsSync(path5.join(homeDir, "engine.iife.js"));
 var args = process.argv.slice(2);
-var VALUE_FLAGS = /* @__PURE__ */ new Set(["--workers", "--pause", "--count", "--max", "--viewport", "--depth", "--port", "--top", "--load", "--timeout", "--source", "--month", "--out", "--report"]);
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["--workers", "--pause", "--count", "--max", "--viewport", "--depth", "--port", "--top", "--load", "--timeout", "--source", "--month", "--out", "--report", "--basic", "--header", "--cookie", "--browser"]);
+var flagAll = (name) => args.flatMap((a, i) => a === name && args[i + 1] !== void 0 ? [args[i + 1]] : []);
 var target;
 for (let i = 0; i < args.length; i++) {
   if (args[i].startsWith("--")) {
@@ -10108,6 +10299,7 @@ var count = flagValue("--count") ? Number(flagValue("--count")) : Infinity;
 var max = Number(flagValue("--max", 100));
 var maxDepth = Number(flagValue("--depth", Infinity));
 var sameHost = hasFlag("--same-host");
+var wholeSite = hasFlag("--whole-site");
 var [vw, vh] = String(flagValue("--viewport", "1440x900")).split("x").map(Number);
 var recheck = hasFlag("--recheck");
 var renderOnly = hasFlag("--render");
@@ -10127,12 +10319,12 @@ var TORN_DOWN = /detached Frame|Target closed|Session closed|Connection closed|b
 var neverResolves = (row) => row.reason === "unreachable" && /ERR_NAME_NOT_RESOLVED/.test(row.detail ?? "");
 var SKIP_EXT = /\.(pdf|jpe?g|png|gif|svg|webp|avif|ico|mp4|mp3|m4a|webm|mov|zip|gz|tgz|rar|7z|dmg|exe|msi|apk|docx?|xlsx?|pptx?|csv|xml|rss|atom|json|js|css|woff2?|ttf|eot)$/i;
 var TRACKING = /^(utm_|gclid$|fbclid$|msclkid$|mc_cid$|mc_eid$|_ga$|ref$)/i;
-var SECOND_LEVEL = /* @__PURE__ */ new Set(["co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go"]);
+var SECOND_LEVEL2 = /* @__PURE__ */ new Set(["co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go"]);
 function registrable(hostname) {
   const labels = hostname.toLowerCase().replace(/^www\./, "").split(".");
   if (labels.length <= 2) return labels.join(".");
   const [tld, sld] = [labels.at(-1), labels.at(-2)];
-  return tld.length === 2 && SECOND_LEVEL.has(sld) ? labels.slice(-3).join(".") : labels.slice(-2).join(".");
+  return tld.length === 2 && SECOND_LEVEL2.has(sld) ? labels.slice(-3).join(".") : labels.slice(-2).join(".");
 }
 var localStamp = () => {
   const d = /* @__PURE__ */ new Date();
@@ -10165,6 +10357,12 @@ var label;
 var startUrl = null;
 var host = null;
 var site = null;
+var scopeOf = (url) => {
+  const p = url.pathname.replace(/\/+$/, "");
+  const last = p.slice(p.lastIndexOf("/") + 1);
+  return (/\.[a-z0-9]{1,5}$/i.test(last) ? p.slice(0, p.lastIndexOf("/")) : p) || null;
+};
+var scope = null;
 if (mode === "top") {
   const { resolveTranco, resolveCrux } = await import(new URL("./top-lists.mjs", import.meta.url).href);
   listMeta = await (source === "tranco" ? resolveTranco : resolveCrux)(path5.join(auditsDir, "lists"), topN);
@@ -10181,7 +10379,9 @@ if (mode === "top") {
   site = registrable(host);
   slug = site;
   label = site;
+  if (!wholeSite) scope = scopeOf(startUrl);
 }
+var inScope = (pathname) => !scope || pathname === scope || pathname.startsWith(`${scope}/`);
 var fullList = null;
 if (listFile) {
   fullList = readList(listFile);
@@ -10196,7 +10396,8 @@ function pickRunDir() {
   const latest = runs.at(-1);
   if (latest && !fresh) {
     const status = readJson(path5.join(slugDir, latest, "status.json"));
-    if (status && (!status.done || recheck || renderOnly)) return path5.join(slugDir, latest);
+    const sameStart = !isSite || recheck || renderOnly || !status?.start || (status.scope ?? null) === scope;
+    if (status && sameStart && (!status.done || recheck || renderOnly)) return path5.join(slugDir, latest);
   }
   return path5.join(slugDir, localStamp());
 }
@@ -10255,7 +10456,7 @@ var done = /* @__PURE__ */ new Map();
 var hosts = /* @__PURE__ */ new Map();
 async function replay() {
   if (!fs5.existsSync(progressFile)) return;
-  const rl = readline2.createInterface({ input: fs5.createReadStream(progressFile), crlfDelay: Infinity });
+  const rl = readline3.createInterface({ input: fs5.createReadStream(progressFile), crlfDelay: Infinity });
   for await (const line of rl) {
     if (!line.trim()) continue;
     let row;
@@ -10296,6 +10497,7 @@ var meta = {
   host,
   site,
   sameHost,
+  scope,
   list: listMeta ? { file: path5.basename(listFile), id: listMeta.id, date: listMeta.date, source: listMeta.source, name: listMeta.name, url: listMeta.url } : listFile ? { file: path5.basename(listFile) } : null,
   total: list?.length ?? null,
   count: isSite ? max : Number.isFinite(count) ? count : list?.length ?? null,
@@ -10355,7 +10557,7 @@ if (isSite) {
   if (alreadyDone) console.log(`${alreadyDone} refused page${alreadyDone === 1 ? "" : "s"} already rechecked this month and left alone (--again includes them)`);
 }
 if (list && !recheck) while (cursor < list.length && (list[cursor].tag || done.has(list[cursor].rank))) cursor++;
-console.log(`${label} with the pour engine: ${isSite ? `crawling ${sameHost ? host : `*.${site}`} up to ${max} pages` : `${list.length} domains${tally.tagged ? `, ${tally.tagged} tagged unavailable` : ""}${Number.isFinite(count) ? `, stopping at ${count} audited` : ""}`} \xB7 ${done.size ? `resuming with ${audited} audited, ${skipped} skipped` : "fresh run"}${recheck ? ` \xB7 recheck of ${recheckTotal} refused pages` : ""} \xB7 ${workers} workers \xB7 ${showDir(runDir)}`);
+console.log(`${label} with the pour engine: ${isSite ? `crawling ${sameHost ? host : `*.${site}`}${scope ? `${scope}/ and below` : ""} up to ${max} pages` : `${list.length} domains${tally.tagged ? `, ${tally.tagged} tagged unavailable` : ""}${Number.isFinite(count) ? `, stopping at ${count} audited` : ""}`} \xB7 ${done.size ? `resuming with ${audited} audited, ${skipped} skipped` : "fresh run"}${recheck ? ` \xB7 recheck of ${recheckTotal} refused pages` : ""} \xB7 ${workers} workers \xB7 ${showDir(runDir)}`);
 var robots = { fetched: false, rules: [] };
 if (isSite) {
   try {
@@ -10396,6 +10598,7 @@ function normalise(href, base) {
   if (SKIP_EXT.test(url.pathname)) return null;
   for (const key of [...url.searchParams.keys()]) if (TRACKING.test(key)) url.searchParams.delete(key);
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
+  if (!inScope(url.pathname)) return null;
   return url.toString();
 }
 var openReport = () => new Promise((resolve) => {
@@ -10424,7 +10627,8 @@ var CHALLENGE = () => /just a moment|attention required|performing security veri
 async function launchBrowser() {
   const opts = { headless: true, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false, args: ["--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable", "--autoplay-policy=no-user-gesture-required"] };
   const launched = await (async () => {
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) return puppeteer.launch({ ...opts, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH });
+    const explicit = flagValue("--browser") ? String(flagValue("--browser")) : process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (explicit) return puppeteer.launch({ ...opts, executablePath: explicit });
     try {
       return await puppeteer.launch(opts);
     } catch {
@@ -10455,6 +10659,27 @@ async function launchBrowser() {
   }
   return launched;
 }
+var auth = null;
+var requestAuth = null;
+try {
+  if (hasFlag("--login")) {
+    auth = await signIn({
+      url: isSite ? startUrl?.toString() ?? target : list?.[0]?.url ?? `https://${list?.[0]?.domain}/`,
+      viewport: { width: vw, height: vh },
+      launch: () => launchSignInBrowser(puppeteer, { executablePath: flagValue("--browser") ? String(flagValue("--browser")) : void 0 })
+    });
+  }
+  if (flagValue("--basic") || flagAll("--header").length || flagAll("--cookie").length) {
+    requestAuth = { basic: flagValue("--basic") ? parseBasic(String(flagValue("--basic"))) : null, headers: parseHeaders(flagAll("--header")), cookies: parseCookies(flagAll("--cookie")) };
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+var prepareAuth = async (page, url) => {
+  if (auth) await applyAuthState(page, auth);
+  if (requestAuth) await applyRequestAuth(page, { ...requestAuth, url });
+};
 var browser = await launchBrowser();
 if (process.platform === "darwin") {
   try {
@@ -10535,6 +10760,7 @@ async function auditOne(item) {
     await page.setBypassCSP(true);
     page.on("dialog", (dialog) => dialog.dismiss().catch(() => {
     }));
+    if (auth || requestAuth) await prepareAuth(page, isSite ? item.url : item.url ?? `https://${item.domain}/`);
     row.phase = "load";
     let response = null;
     let navError = null;
@@ -10592,6 +10818,11 @@ async function auditOne(item) {
     row.phase = "challenge check";
     if (await page.evaluate(CHALLENGE).catch(() => false)) {
       row.reason = "bot-challenge";
+      return row;
+    }
+    if (isSite && await looksLikeSignIn(page, item.url)) {
+      row.reason = "sign-in";
+      row.detail = page.url().slice(0, 120);
       return row;
     }
     row.phase = "consent";
@@ -10938,6 +11169,15 @@ if (isSite && !done.size) {
   clearTimeout(seedTimer);
   inflight.delete(first.url);
   attempts += 1;
+  if (row.reason === "sign-in") {
+    console.error(`
+${first.url} sent the crawler to a sign-in form (${row.detail}) instead of the page.
+${auth ? "The sign-in did not take: the site may want more than cookies, or the session was for another address." : `Sign in with: pour report ${first.url} --login`}`);
+    record(row);
+    writeStatus({}, true);
+    await finish(false);
+    process.exit(1);
+  }
   if (!(row.reason === "error" && TORN_DOWN.test(row.detail ?? ""))) record(row);
   else queue.unshift(first);
   writeStatus({}, true);

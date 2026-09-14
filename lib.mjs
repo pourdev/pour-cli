@@ -186,23 +186,30 @@ export async function serveRoot(root) {
  * delay. Resolves to the page and the URL that actually loaded; throws
  * with a one-line reason otherwise (the page is closed first).
  */
-export async function openPage(browser, { url, viewport, timeoutMs = 30000, settleMs = 0, schemeless = false, insecure = false, onNote } = {}) {
+export async function openPage(browser, { url, viewport, timeoutMs = 30000, settleMs = 0, schemeless = false, insecure = false, onNote, prepare } = {}) {
   const page = await browser.newPage();
   await page.setViewport(viewport);
+  // A saved session, request auth: whatever has to be on the page before it
+  // navigates (auth.mjs).
+  if (prepare) await prepare(page);
   if (insecure) {
     // Per page, so one browser serves trusting and untrusting calls alike.
     const session = await page.createCDPSession();
     await session.send('Security.setIgnoreCertificateErrors', { ignore: true });
   }
-  const goto = () => page.goto(url, { waitUntil: 'networkidle2', timeout: timeoutMs });
+  let response = null;
+  const goto = async () => { response = await page.goto(url, { waitUntil: 'networkidle2', timeout: timeoutMs }); };
   try {
     await goto();
   } catch (error) {
     const message = error.message.split('\n')[0];
     const tlsFailure = /ERR_CERT|ERR_SSL|SSL_PROTOCOL/i.test(message);
+    // Chrome answers an HTTP authentication challenge it has no credentials
+    // for with this error rather than a page.
+    const authNeeded = /ERR_INVALID_AUTH_CREDENTIALS/.test(message);
     if (!(tlsFailure && schemeless && url.startsWith('https://'))) {
       await page.close().catch(() => {});
-      throw new Error(`could not load ${url}: ${message}${tlsFailure ? '\n(--insecure ignores certificate errors, if you trust the site)' : ''}`);
+      throw new Error(`could not load ${url}: ${message}${tlsFailure ? '\n(--insecure ignores certificate errors, if you trust the site)' : ''}${authNeeded ? '\n(the site asks for HTTP authentication: pass --basic user:password)' : ''}`);
     }
     url = url.replace(/^https:/, 'http:');
     onNote?.(`https failed (${message.split(' at ')[0]}) — retrying over ${url}…`);
@@ -214,7 +221,9 @@ export async function openPage(browser, { url, viewport, timeoutMs = 30000, sett
     }
   }
   if (settleMs > 0) await sleep(settleMs);
-  return { page, url };
+  // The main document's status travels with the page: a 401 is a site
+  // asking for HTTP authentication, not a page to audit.
+  return { page, url, status: response?.status() ?? null };
 }
 
 /** A bot-verification interstitial (Cloudflare's "Just a moment…" and kin)

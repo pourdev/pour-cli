@@ -64,6 +64,7 @@ import {
   IMPACT_ORDER, sleep, serveRoot,
 } from './lib.mjs';
 import { makePaint, findingsFromResults, markdownReport } from './report.mjs';
+import { signIn, launchSignInBrowser, applyAuthState, applyRequestAuth, parseHeaders, parseCookies, parseBasic, looksLikeSignIn } from './auth.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -71,90 +72,116 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const flags = new Map();
 const positional = [];
+// --header and --cookie may be given more than once; the rest, last wins.
+const REPEATABLE = new Set(['header', 'cookie']);
+const setFlag = (name, value) => {
+  if (REPEATABLE.has(name)) flags.set(name, [...(flags.get(name) ?? []), value]);
+  else flags.set(name, value);
+};
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (!a.startsWith('--')) { positional.push(a); continue; }
   const eq = a.indexOf('=');
-  if (eq !== -1) { flags.set(a.slice(2, eq), a.slice(eq + 1)); continue; }
+  if (eq !== -1) { setFlag(a.slice(2, eq), a.slice(eq + 1)); continue; }
   const next = argv[i + 1];
-  if (next !== undefined && !next.startsWith('--')) { flags.set(a.slice(2), next); i++; }
-  else flags.set(a.slice(2), true);
+  if (next !== undefined && !next.startsWith('--')) { setFlag(a.slice(2), next); i++; }
+  else setFlag(a.slice(2), true);
 }
 
 const usage = `pour — audit a URL against WCAG 2.2 with the pour engine
 
-Usage: pour <url | file.html> [options]
-       pour report <url | list.csv> [options]
-       pour check <files, folders or globs> [options]
-       pour mcp [--browser <path>]
+Usage: pour <url | file.html> [options]        one page
+       pour report <url | list.csv> [options]  a site, or a list of domains
+       pour check <files, folders or globs>    files on disk, no browser
+       pour mcp                                browser tools for an AI agent
 
-Options:
-  --root <dir>         with a local .html file: the folder to serve as the
-                       site root, for a page whose assets are addressed from
-                       there (/css/site.css). Default: the file's own folder
-  --json               print the full engine results as JSON
+One page
   --viewport WxH       viewport (default 1440x900); a bare width implies x900
   --scroll             scroll through the page before auditing (lazy content)
   --wait <ms>          extra settle delay after load (default 0)
   --timeout <ms>       navigation timeout (default 30000)
-  --bp                 include best-practice rules alongside WCAG A+AA
   --exclude <sel>      CSS selector excluded from every rule
-  --fail-on <what>     violations (default) | incomplete | none
-  --max-nodes <n>      element details shown per rule (default 5, 0 = all)
+  --bp                 include best-practice rules alongside WCAG A+AA
+  --root <dir>         with a local .html file: the folder served as the site
+                       root, for assets addressed from there (/css/site.css);
+                       default the file's own folder
+
+Output
   --format <what>      terminal (default) | json | markdown (a pull-request
                        comment); pour check adds github (annotations on the
-                       changed lines of a pull request) and sarif (GitHub
-                       code scanning, and any SARIF viewer)
-  --level <detail>     quiet (the totals line only) | rules (one line per
-                       rule, no elements) | max (default: everything)
+                       changed lines) and sarif (GitHub code scanning)
+  --level <detail>     quiet (the totals line) | rules (one line per rule) |
+                       max (default: everything)
+  --max-nodes <n>      element details shown per rule (default 5, 0 = all)
+  --json               the full engine results as JSON
+  --fail-on <what>     violations (default) | incomplete | none
+
+Screenshots
   --filter <name>      screenshot the page through a vision/sensory simulation
                        instead of auditing (--filter list shows them all)
-  --shot [file]        screenshot mode: save a PNG (default name derived from
-                       the URL and filter) — no audit runs
-  --full               capture the full page height, not just the viewport
-  --insecure           ignore TLS certificate errors
+  --shot [file]        save a PNG (default name from the URL and filter);
+                       no audit runs
+  --full               the full page height, not just the viewport
+
+Signed-in sites (pour and pour report)
+  --login              a browser window opens at the address; sign in there,
+                       press Enter here, and the run continues signed in.
+                       The session lives in memory for this run only:
+                       nothing is written to disk
+  --basic user:pass    HTTP authentication, for staging sites behind it
+  --header "N: v"      a request header on every request (repeatable)
+  --cookie name=value  a cookie for the address audited (repeatable)
+  A page that answers with a sign-in form instead of the address asked for
+  is reported as exactly that, never audited as if it were the site.
+
+Browser
   --browser <path>     Chrome/Chromium binary to drive (default: bundled
                        Chromium in the monorepo, system Chrome when installed
                        from npm; PUPPETEER_EXECUTABLE_PATH works too)
   --headful            run the browser with a visible window
+  --insecure           ignore TLS certificate errors
 
-  pour report <target> the report runner: every internal page of a site,
-                       breadth first from the address given, or the home
-                       page of every domain in a list file, audited with a
-                       live progress screen in the browser and a standalone
-                       HTML report at the end. Ctrl+C stops cleanly; the
-                       same command resumes. Options: --max <n> pages
-                       (default 100), --workers <n> (4 for a site, 8 for a
-                       list), --pause <ms> between pages per worker,
-                       --depth <n>, --same-host, --viewport WxH, --load
-                       <ms> to let a page load (default 10000), --timeout
-                       <ms> for the whole page (default 20000), --report
-                       <file.html> where to save the finished report, --out
-                       <dir> where the run itself lives (default
-                       reports/audit in the monorepo), --no-open, --port
-                       <n>, --fresh, --recheck, --render
+pour report <target>
+  Every page of a site, breadth first from the address given, or the home
+  page of every domain in a list file, with a live progress screen while it
+  runs and one standalone HTML report at the end. Ctrl+C stops cleanly; the
+  same command resumes. An address with a path stays under it: /help audits
+  /help and the pages below it.
+  --max <n>            pages (default 100)
+  --depth <n>          links deep from the start
+  --same-host          this host only, not its subdomains
+  --whole-site         follow links above the path given too
+  --workers <n>        parallel pages (4 for a site, 8 for a list)
+  --pause <ms>         gap between pages per worker
+  --load <ms>          time to let a page load (default 10000)
+  --timeout <ms>       for the whole page (default 20000)
+  --viewport WxH       as above
+  --report <file.html> where the finished report goes
+  --out <dir>          where the run itself lives (default pour-reports;
+                       reports/audit in the monorepo)
+  --port <n>           the progress screen's port
+  --no-open            do not open the screen, nor the finished report
+  --fresh              start over instead of resuming
+  --recheck            retry the pages the site refused last time
+  --render             write the report from what is on disk, no crawling
+  --login, --basic, --header, --cookie and --browser as above.
 
-  pour check <paths>   the editor's static lane from the terminal, no
-                       browser: HTML, JSX, TSX, Vue, Svelte, Angular, Liquid
-                       and Nunjucks files, every finding with its file, line
-                       and column. Values from code and script-built markup
-                       are left unjudged and counted. --bp, --fail-on,
-                       --level, --max-nodes and --format apply; --no-css
-                       skips reading linked local stylesheets
+pour check <paths>
+  The editor's static lane from the terminal, no browser: HTML, JSX, TSX,
+  Vue, Svelte, Angular, Liquid and Nunjucks files, every finding with its
+  file, line and column. Values from code and script-built markup are left
+  unjudged and counted. --bp, --fail-on, --level, --max-nodes and --format
+  apply; --no-css skips reading linked local stylesheets.
 
-  pour mcp             serve pour's browser tools to an AI agent over the
-                       Model Context Protocol on stdio: pour_audit,
-                       pour_focus_order and pour_screenshot. Add it to any
-                       MCP client as the command "pour" with the argument
-                       "mcp"; the VS Code extension adds it by itself. Each
-                       tool takes a url, http or https, or a path to a file
-                       on disk, which is served over a loopback port so its
-                       relative assets load. A path reaches inside the
-                       directory the server was started in; POUR_MCP_ROOT
-                       names a different one. file: URLs are refused there:
-                       a model chooses those addresses, and the disk is not
-                       a web page. This command still takes them, since you
-                       are the one typing.
+pour mcp
+  Serve pour's browser tools to an AI agent over the Model Context Protocol
+  on stdio: pour_audit, pour_focus_order and pour_screenshot. Add it to any
+  MCP client as the command "pour" with the argument "mcp"; the VS Code
+  extension adds it by itself. Each tool takes a url, http or https, or a
+  path to a file on disk, served over a loopback port so its relative assets
+  load. A path reaches inside the directory the server was started in;
+  POUR_MCP_ROOT names a different one. file: URLs are refused there: a model
+  chooses those addresses, and the disk is not a web page. --browser applies.
 
 Exit codes: 0 clean, 1 findings (per --fail-on), 2 error`;
 
@@ -208,11 +235,12 @@ if (positional[0] === 'report') {
   const VALUES = {
     max: ['--max', '--count'], count: ['--count'], workers: ['--workers'], pause: ['--pause'], depth: ['--depth'],
     viewport: ['--viewport'], load: ['--load'], timeout: ['--timeout'], port: ['--port'], out: ['--out'], report: ['--report'],
+    basic: ['--basic'], header: ['--header'], cookie: ['--cookie'], browser: ['--browser'],
   };
-  const SWITCHES = { 'same-host': '--same-host', fresh: '--fresh', recheck: '--recheck', render: '--render', 'no-open': '--no-open', yes: '--yes' };
+  const SWITCHES = { 'same-host': '--same-host', 'whole-site': '--whole-site', fresh: '--fresh', recheck: '--recheck', render: '--render', 'no-open': '--no-open', yes: '--yes', login: '--login' };
   const runnerArgs = [target];
   for (const [name, value] of flags) {
-    if (VALUES[name]) { for (const f of VALUES[name]) runnerArgs.push(f, String(value)); }
+    if (VALUES[name]) { for (const v of [].concat(value)) for (const f of VALUES[name]) runnerArgs.push(f, String(v)); }
     else if (SWITCHES[name]) { runnerArgs.push(SWITCHES[name]); if (typeof value === 'string') runnerArgs.push(value); }
     else fail(`pour report does not take --${name}`);
   }
@@ -363,6 +391,37 @@ if (positional[0] === 'report') {
     fail(error.message);
   }
 
+  // Signed-in audits: a sign-in by hand first (--login, kept in memory for
+  // this run) or request auth (--basic, --header, --cookie). All of it goes
+  // on the page before it navigates.
+  let auth = null;
+  let requestAuth = null;
+  try {
+    if (flags.has('login')) {
+      if (localFile) fail('--login is for a web address; a local file has nothing to sign in to');
+      progress('signing in…');
+      auth = await signIn({
+        url, viewport,
+        launch: () => launchSignInBrowser(puppeteer, { insecure: flags.has('insecure'), executablePath: flags.get('browser') ? String(flags.get('browser')) : undefined }),
+        say: (text) => { progressDone(); console.error(`pour: ${text}`); },
+      });
+    }
+    if (flags.has('basic') || flags.has('header') || flags.has('cookie')) {
+      requestAuth = {
+        basic: flags.has('basic') ? parseBasic(flags.get('basic')) : null,
+        headers: parseHeaders(flags.get('header')),
+        cookies: parseCookies(flags.get('cookie')),
+      };
+    }
+  } catch (error) {
+    await browser.close().catch(() => {});
+    fail(error.message);
+  }
+  const prepare = auth || requestAuth ? async (page) => {
+    if (auth) await applyAuthState(page, auth);
+    if (requestAuth) await applyRequestAuth(page, { ...requestAuth, url });
+  } : undefined;
+
   let results;
   let shotPath;
   let served = null;
@@ -373,11 +432,16 @@ if (positional[0] === 'report') {
     }
     progress(`loading ${label}…`);
     let page;
+    let status = null;
     try {
-      ({ page, url } = await openPage(browser, { url, viewport, timeoutMs, settleMs, schemeless, onNote: progress }));
+      ({ page, url, status } = await openPage(browser, { url, viewport, timeoutMs, settleMs, schemeless, onNote: progress, prepare }));
     } catch (error) {
       progressDone();
       fail(error.message);
+    }
+    if (status === 401) {
+      progressDone();
+      fail(`${url} asks for HTTP authentication (401)${requestAuth?.basic ? ' and refused the --basic credentials given' : ': pass --basic user:password'}.`);
     }
 
     // A bot-verification interstitial (Cloudflare's "Just a moment…" and kin)
@@ -401,6 +465,14 @@ if (positional[0] === 'report') {
       }
       // The cleared challenge navigates to the real page; let it arrive.
       await sleep(1500);
+    }
+
+    // A sign-in form in place of the page is not the page: say so instead of
+    // auditing it as the site. The address's own sign-in page, asked for by
+    // name, is not caught (the page did not move).
+    if (await looksLikeSignIn(page, url)) {
+      progressDone();
+      fail(`${url} sent the browser to a sign-in form (${page.url()}) instead of the page.\n${auth ? 'The sign-in did not take: the site may want more than cookies, or the session was for another address.' : `Sign in with: pour ${url} --login`}`);
     }
 
     if (flags.has('scroll')) {

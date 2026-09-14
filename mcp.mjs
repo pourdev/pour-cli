@@ -27,6 +27,7 @@ import {
   loadPuppeteer, launchBrowser, openPage, isChallenge, scrollPage, runAudit, applyFilter, collectFocusOrder,
   compactResults, IMPACT_ORDER, serveRoot,
 } from './lib.mjs';
+import { looksLikeSignIn } from './auth.mjs';
 
 // The tools reach a page two ways: a URL, or a file on disk through `path`.
 // Only the first is a web address, and only http and https are web
@@ -165,6 +166,12 @@ export async function serve({ scriptDir, version = 'dev', executablePath } = {})
         if (await isChallenge(page)) {
           throw new Error(`${loaded} is showing a bot-verification challenge, not the site; a result here would describe the challenge page. `
             + `Open the site in a normal browser, or run \`pour ${loaded} --headful\` and complete the check there.`);
+        }
+        if (await looksLikeSignIn(page, loaded)) {
+          // The server has no one to sign in for it: sessions are never
+          // kept on disk, and a sign-in needs a person at a window.
+          throw new Error(`${loaded} sent the browser to a sign-in form instead of the page, so there is nothing here to audit. `
+            + `Pages behind a login are audited from a terminal, where a person can sign in: \`pour ${loaded} --login\`.`);
         }
         if (args.scroll === true) await scrollPage(page);
         // A served file answers as the file it is. The loopback address it

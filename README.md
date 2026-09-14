@@ -26,43 +26,52 @@ binary to use something else.
 ## Usage
 
 ```
-pour <url | file.html> [options]
-pour check <files, folders or globs> [options]
-pour report <url | list.csv> [options]
-pour mcp
+pour <url | file.html> [options]        one page
+pour report <url | list.csv> [options]  a site, or a list of domains (see below)
+pour check <files, folders or globs>    files on disk, no browser (see below)
+pour mcp                                browser tools for an AI agent (see below)
 
-  --root <dir>         with a local .html file: the folder to serve as the
-                       site root, for a page whose assets are addressed from
-                       there (/css/site.css). Default: the file's own folder
-  --json               print the full engine results as JSON
-  --format <what>      terminal (default) | json | markdown (a pull-request
-                       comment); pour check adds github (annotations on the
-                       changed lines of a pull request) and sarif (GitHub
-                       code scanning, and any SARIF viewer)
+One page
   --viewport WxH       viewport (default 1440x900); a bare width implies x900
   --scroll             scroll through the page before auditing (lazy content)
   --wait <ms>          extra settle delay after load (default 0)
   --timeout <ms>       navigation timeout (default 30000)
-  --bp                 include best-practice rules alongside WCAG A+AA
   --exclude <sel>      CSS selector excluded from every rule
-  --fail-on <what>     violations (default) | incomplete | none
+  --bp                 include best-practice rules alongside WCAG A+AA
+  --root <dir>         with a local .html file: the folder served as the site
+                       root, for assets addressed from there (/css/site.css);
+                       default the file's own folder
+
+Output
+  --format <what>      terminal (default) | json | markdown (a pull-request
+                       comment); pour check adds github (annotations on the
+                       changed lines) and sarif (GitHub code scanning)
+  --level <detail>     quiet (the totals line) | rules (one line per rule) |
+                       max (default: everything)
   --max-nodes <n>      element details shown per rule (default 5, 0 = all)
-  --level <detail>     quiet (the totals line only) | rules (one line per
-                       rule, no elements) | max (default: everything)
+  --json               the full engine results as JSON
+  --fail-on <what>     violations (default) | incomplete | none
+
+Screenshots
   --filter <name>      screenshot the page through a vision/sensory simulation
                        instead of auditing (--filter list shows them all)
-  --shot [file]        screenshot mode: save a PNG (default name derived from
-                       the URL and filter), no audit runs
-  --full               capture the full page height, not just the viewport
-  --insecure           ignore TLS certificate errors
+  --shot [file]        save a PNG (default name from the URL and filter);
+                       no audit runs
+  --full               the full page height, not just the viewport
+
+Signed-in sites (pour and pour report)
+  --login              a browser window opens at the address; sign in there,
+                       press Enter here, and the run continues signed in.
+                       The session lives in memory for this run only:
+                       nothing is written to disk
+  --basic user:pass    HTTP authentication, for staging sites behind it
+  --header "N: v"      a request header on every request (repeatable)
+  --cookie name=value  a cookie for the address audited (repeatable)
+
+Browser
   --browser <path>     Chrome/Chromium binary to drive
   --headful            run the browser with a visible window
-
-pour check <paths>     the editor's static lane from the terminal, no
-                       browser (see below)
-pour report <target>   every page of a site, with a progress screen and a
-                       standalone HTML report (see below)
-pour mcp               serve pour's browser tools to an AI agent (see below)
+  --insecure           ignore TLS certificate errors
 ```
 
 Exit codes: 0 clean, 1 findings (per `--fail-on`), 2 error.
@@ -144,15 +153,61 @@ cleanly; the same command resumes.
 
 ```sh
 pour report yoursite.com --max 200 --report reports/yoursite.html
+pour report https://yoursite.com/help        # /help and the pages under it, nothing above
 ```
 
-`--max <n>` caps the pages, `--workers <n>` the parallel pages (4 for a
-site, 8 for a list), `--pause <ms>` the gap between pages per worker;
-`--depth <n>`, `--same-host`, `--viewport WxH`, `--load <ms>` and
-`--timeout <ms>` shape the crawl. `--report <file.html>` says where the
-finished report goes; `--out <dir>` where the run itself lives (default
-`pour-reports` in the working directory). `--no-open`, `--port <n>`,
-`--fresh`, `--recheck` and `--render` behave as their names say.
+An address with a path keeps the crawl under that path; `--whole-site`
+follows links above it too.
+
+```
+  --max <n>            pages (default 100)
+  --depth <n>          links deep from the start
+  --same-host          this host only, not its subdomains
+  --whole-site         follow links above the path given too
+  --workers <n>        parallel pages (4 for a site, 8 for a list)
+  --pause <ms>         gap between pages per worker
+  --load <ms>          time to let a page load (default 10000)
+  --timeout <ms>       for the whole page (default 20000)
+  --viewport WxH       as above
+  --report <file.html> where the finished report goes
+  --out <dir>          where the run itself lives (default pour-reports)
+  --port <n>           the progress screen's port
+  --no-open            do not open the screen, nor the finished report
+  --fresh              start over instead of resuming
+  --recheck            retry the pages the site refused last time
+  --render             write the report from what is on disk, no crawling
+```
+
+`--login`, `--basic`, `--header`, `--cookie` and `--browser` apply as above.
+
+## Signed-in sites
+
+Pages behind a login are audited with the session you sign in with:
+
+```sh
+pour https://app.example.com/dashboard --login   # a browser opens; sign in, press Enter
+pour report https://app.example.com/ --login     # the same, then the crawl runs signed in
+```
+
+The window is the Chrome you have installed, opened as an ordinary browser,
+so sign-in providers that refuse automated browsers (Google's "This browser
+or app may not be secure") accept it; the audit itself keeps using the
+testing build. The session is read from that window into memory and used
+for this run only: the site's own cookies and storage, not the sign-in
+provider's. Nothing is written to disk, so there is no session file to
+leak; the next run signs in again.
+
+For sites behind HTTP authentication or a token, `--basic user:pass`,
+`--header "Authorization: Bearer …"` (repeatable) and `--cookie name=value`
+(repeatable) set the request without a browser window. A header and HTTP
+credentials go only to the site being audited: the fonts, scripts, images
+and frames a page pulls from other hosts get neither, and another host's
+own authentication challenge is declined.
+
+A page that answers with a sign-in form instead of the address asked for is
+reported as exactly that, never audited as if it were the site. `pour mcp`
+has no one to sign in for it, so pages behind a login are audited from the
+terminal.
 
 ## CI
 
