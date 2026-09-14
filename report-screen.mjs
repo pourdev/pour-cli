@@ -554,14 +554,17 @@ var TEXT_INPUT = /* @__PURE__ */ new Set([
   ""
 ]);
 var LABELABLE = /* @__PURE__ */ new Set(["input", "select", "textarea", "button", "meter", "output", "progress"]);
+function speakable(name) {
+  return name.replace(/[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}\u200B-\u200D\u2060\uFEFF]/gu, "").trim() ? name : "";
+}
 function accessibleName(element) {
-  return computeName(element, false, false, /* @__PURE__ */ new Set());
+  return speakable(computeName(element, false, false, /* @__PURE__ */ new Set()));
 }
 function labelledByName(element) {
-  return referencedName(element, /* @__PURE__ */ new Set()) ?? "";
+  return speakable(referencedName(element, /* @__PURE__ */ new Set()) ?? "");
 }
 function nativeLabelName(element, label) {
-  return computeName(label, false, hiddenForName(label), /* @__PURE__ */ new Set([element]));
+  return speakable(computeName(label, false, hiddenForName(label), /* @__PURE__ */ new Set([element])));
 }
 function hiddenForName(element) {
   for (let node = element; node; node = flatTreeParent(node)) {

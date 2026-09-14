@@ -111,13 +111,13 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.123",
-  // Release: engine 1.42.3, contrast read through positioned overlays, no names from generated content on SVG elements, nested controls found through shadow trees; the benchmark's one-command pipeline and verdict reports.
+  version: "1.2.124",
+  // Release: engine 1.42.4, a name made only of private-use icon glyphs is no name; the verdict crawl's shadow-tree and invisible-character checks.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
-    version: "1.42.3"
-    // Contrast: the hit-test outranks the ancestor walk for image backdrops (a positioned card over a gradient section), off screen it asks; accessible names ignore ::before/::after on SVG elements; nested controls walk the flat tree and follow a shadow host's negative tabindex.
+    version: "1.42.4"
+    // Accessible names made only of Private Use Area glyphs (icon fonts) and zero-width characters count as empty: an icon-only button with no other name fails.
   },
   extension: {
     // Appended to productName for the manifest name, which IS the store
@@ -712,14 +712,17 @@ var TEXT_INPUT = /* @__PURE__ */ new Set([
   ""
 ]);
 var LABELABLE = /* @__PURE__ */ new Set(["input", "select", "textarea", "button", "meter", "output", "progress"]);
+function speakable(name) {
+  return name.replace(/[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}\u200B-\u200D\u2060\uFEFF]/gu, "").trim() ? name : "";
+}
 function accessibleName(element) {
-  return computeName(element, false, false, /* @__PURE__ */ new Set());
+  return speakable(computeName(element, false, false, /* @__PURE__ */ new Set()));
 }
 function labelledByName(element) {
-  return referencedName(element, /* @__PURE__ */ new Set()) ?? "";
+  return speakable(referencedName(element, /* @__PURE__ */ new Set()) ?? "");
 }
 function nativeLabelName(element, label2) {
-  return computeName(label2, false, hiddenForName(label2), /* @__PURE__ */ new Set([element]));
+  return speakable(computeName(label2, false, hiddenForName(label2), /* @__PURE__ */ new Set([element])));
 }
 function hiddenForName(element) {
   for (let node = element; node; node = flatTreeParent(node)) {
