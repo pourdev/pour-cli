@@ -9,16 +9,15 @@
 //                     process and dies with it: nothing is written to disk
 //                     (David, 2026-09-14: a saved session is a live login
 //                     in a project folder, one commit away from a leak).
-//   request auth      --basic user:pass for HTTP authentication (staging
-//                     sites), --header "Name: value" and --cookie name=value
-//                     for token sessions. Set per page before it loads.
+//   --basic user:pass HTTP authentication (a staging site behind a wall),
+//                     the one thing a sign-in window cannot hand over. Set
+//                     per page before it loads.
 //
 // Everything stays on the site being audited. The sign-in window may pass
 // through a sign-in provider, and a page embeds fonts, scripts and images
 // from other hosts: only cookies and storage belonging to the site are
-// kept from the window, and a header or HTTP credentials go only on
-// requests to the site, never to a third-party host on the page, not even
-// one that answers with its own authentication challenge.
+// kept from the window, and HTTP credentials answer only the site's
+// challenges, never a third-party host's.
 //
 // Sessions expire, so a page that lands on a sign-in form instead of the
 // address asked for is reported as exactly that (looksLikeSignIn), never
@@ -101,26 +100,6 @@ export async function applyAuthState(page, state) {
   }
 }
 
-/** `--header "Name: value"` (repeatable) to an object. */
-export function parseHeaders(values) {
-  const headers = {};
-  for (const raw of [].concat(values ?? []).filter((v) => typeof v === 'string')) {
-    const at = raw.indexOf(':');
-    if (at < 1) throw new Error(`--header expects "Name: value", got "${raw}"`);
-    headers[raw.slice(0, at).trim()] = raw.slice(at + 1).trim();
-  }
-  return headers;
-}
-
-/** `--cookie name=value` (repeatable) to a list. */
-export function parseCookies(values) {
-  return [].concat(values ?? []).filter((v) => typeof v === 'string').map((raw) => {
-    const at = raw.indexOf('=');
-    if (at < 1) throw new Error(`--cookie expects name=value, got "${raw}"`);
-    return { name: raw.slice(0, at).trim(), value: raw.slice(at + 1) };
-  });
-}
-
 /** `--basic user:pass`. */
 export function parseBasic(value) {
   if (typeof value !== 'string' || !value.includes(':')) throw new Error('--basic expects user:password');
@@ -128,28 +107,22 @@ export function parseBasic(value) {
   return { username: value.slice(0, at), password: value.slice(at + 1) };
 }
 
-/** Request-level auth for one page, set before it loads. Cookies from the
- *  flag are set for the address being audited. Headers and HTTP credentials
- *  are added at the network layer, request by request, and only to
- *  requests for the site: a page's third-party fonts, scripts, images and
- *  frames get neither, and a third-party host's own authentication
- *  challenge is declined rather than answered with the site's password. */
-export async function applyRequestAuth(page, { basic, headers, cookies, url } = {}) {
-  if (cookies?.length && url) await page.setCookie(...cookies.map((c) => ({ ...c, url })));
-  const extra = headers && Object.keys(headers).length ? headers : null;
-  if (!basic && !extra) return;
+/** HTTP authentication for one page, set before it loads. The browser's
+ *  credential cache is not something a sign-in window can hand over, so
+ *  a site behind a basic-auth wall (a staging site, typically) is the one
+ *  case --login cannot cover. The credentials are answered at the network
+ *  layer, challenge by challenge, and only to the site: a third-party host's
+ *  own challenge on the page is declined rather than answered with the
+ *  site's password. */
+export async function applyBasicAuth(page, { basic, url }) {
   const site = siteOf(new URL(url).hostname);
   const cdp = await page.createCDPSession();
   const answered = new Set();
-  cdp.on('Fetch.requestPaused', ({ requestId, request }) => {
-    const params = { requestId };
-    if (extra && urlOnSite(request.url, site)) params.headers = Object.entries({ ...request.headers, ...extra }).map(([name, value]) => ({ name, value }));
-    cdp.send('Fetch.continueRequest', params).catch(() => {});
-  });
+  cdp.on('Fetch.requestPaused', ({ requestId }) => { cdp.send('Fetch.continueRequest', { requestId }).catch(() => {}); });
   cdp.on('Fetch.authRequired', ({ requestId, request, authChallenge }) => {
     // One answer per request: credentials the server refuses are not
     // offered again, and a proxy's challenge is not the site's.
-    const ours = basic && authChallenge?.source !== 'Proxy' && urlOnSite(request.url, site) && !answered.has(requestId);
+    const ours = authChallenge?.source !== 'Proxy' && urlOnSite(request.url, site) && !answered.has(requestId);
     if (ours) answered.add(requestId);
     const authChallengeResponse = ours ? { response: 'ProvideCredentials', username: basic.username, password: basic.password } : { response: 'CancelAuth' };
     cdp.send('Fetch.continueWithAuth', { requestId, authChallengeResponse }).catch(() => {});

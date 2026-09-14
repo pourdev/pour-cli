@@ -64,7 +64,7 @@ import {
   IMPACT_ORDER, sleep, serveRoot,
 } from './lib.mjs';
 import { makePaint, findingsFromResults, markdownReport } from './report.mjs';
-import { signIn, launchSignInBrowser, applyAuthState, applyRequestAuth, parseHeaders, parseCookies, parseBasic, looksLikeSignIn } from './auth.mjs';
+import { signIn, launchSignInBrowser, applyAuthState, applyBasicAuth, parseBasic, looksLikeSignIn } from './auth.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -72,12 +72,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const flags = new Map();
 const positional = [];
-// --header and --cookie may be given more than once; the rest, last wins.
-const REPEATABLE = new Set(['header', 'cookie']);
-const setFlag = (name, value) => {
-  if (REPEATABLE.has(name)) flags.set(name, [...(flags.get(name) ?? []), value]);
-  else flags.set(name, value);
-};
+const setFlag = (name, value) => { flags.set(name, value); };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (!a.startsWith('--')) { positional.push(a); continue; }
@@ -128,9 +123,8 @@ Signed-in sites (pour and pour report)
                        press Enter here, and the run continues signed in.
                        The session lives in memory for this run only:
                        nothing is written to disk
-  --basic user:pass    HTTP authentication, for staging sites behind it
-  --header "N: v"      a request header on every request (repeatable)
-  --cookie name=value  a cookie for the address audited (repeatable)
+  --basic user:pass    HTTP authentication (a staging site behind a wall),
+                       the one thing a sign-in window cannot hand over
   A page that answers with a sign-in form instead of the address asked for
   is reported as exactly that, never audited as if it were the site.
 
@@ -164,7 +158,7 @@ pour report <target>
   --fresh              start over instead of resuming
   --recheck            retry the pages the site refused last time
   --render             write the report from what is on disk, no crawling
-  --login, --basic, --header, --cookie and --browser as above.
+  --login, --basic and --browser as above.
 
 pour check <paths>
   The editor's static lane from the terminal, no browser: HTML, JSX, TSX,
@@ -235,7 +229,7 @@ if (positional[0] === 'report') {
   const VALUES = {
     max: ['--max', '--count'], count: ['--count'], workers: ['--workers'], pause: ['--pause'], depth: ['--depth'],
     viewport: ['--viewport'], load: ['--load'], timeout: ['--timeout'], port: ['--port'], out: ['--out'], report: ['--report'],
-    basic: ['--basic'], header: ['--header'], cookie: ['--cookie'], browser: ['--browser'],
+    basic: ['--basic'], browser: ['--browser'],
   };
   const SWITCHES = { 'same-host': '--same-host', 'whole-site': '--whole-site', fresh: '--fresh', recheck: '--recheck', render: '--render', 'no-open': '--no-open', yes: '--yes', login: '--login' };
   const runnerArgs = [target];
@@ -392,10 +386,10 @@ if (positional[0] === 'report') {
   }
 
   // Signed-in audits: a sign-in by hand first (--login, kept in memory for
-  // this run) or request auth (--basic, --header, --cookie). All of it goes
-  // on the page before it navigates.
+  // this run) or HTTP authentication (--basic). Both go on the page before
+  // it navigates.
   let auth = null;
-  let requestAuth = null;
+  let basic = null;
   try {
     if (flags.has('login')) {
       if (localFile) fail('--login is for a web address; a local file has nothing to sign in to');
@@ -406,20 +400,14 @@ if (positional[0] === 'report') {
         say: (text) => { progressDone(); console.error(`pour: ${text}`); },
       });
     }
-    if (flags.has('basic') || flags.has('header') || flags.has('cookie')) {
-      requestAuth = {
-        basic: flags.has('basic') ? parseBasic(flags.get('basic')) : null,
-        headers: parseHeaders(flags.get('header')),
-        cookies: parseCookies(flags.get('cookie')),
-      };
-    }
+    if (flags.has('basic')) basic = parseBasic(flags.get('basic'));
   } catch (error) {
     await browser.close().catch(() => {});
     fail(error.message);
   }
-  const prepare = auth || requestAuth ? async (page) => {
+  const prepare = auth || basic ? async (page) => {
     if (auth) await applyAuthState(page, auth);
-    if (requestAuth) await applyRequestAuth(page, { ...requestAuth, url });
+    if (basic) await applyBasicAuth(page, { basic, url });
   } : undefined;
 
   let results;
@@ -441,7 +429,7 @@ if (positional[0] === 'report') {
     }
     if (status === 401) {
       progressDone();
-      fail(`${url} asks for HTTP authentication (401)${requestAuth?.basic ? ' and refused the --basic credentials given' : ': pass --basic user:password'}.`);
+      fail(`${url} asks for HTTP authentication (401)${basic ? ' and refused the --basic credentials given' : ': pass --basic user:password'}.`);
     }
 
     // A bot-verification interstitial (Cloudflare's "Just a moment…" and kin)

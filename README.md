@@ -64,9 +64,8 @@ Signed-in sites (pour and pour report)
                        press Enter here, and the run continues signed in.
                        The session lives in memory for this run only:
                        nothing is written to disk
-  --basic user:pass    HTTP authentication, for staging sites behind it
-  --header "N: v"      a request header on every request (repeatable)
-  --cookie name=value  a cookie for the address audited (repeatable)
+  --basic user:pass    HTTP authentication (a staging site behind a wall),
+                       the one thing a sign-in window cannot hand over
 
 Browser
   --browser <path>     Chrome/Chromium binary to drive
@@ -178,7 +177,7 @@ follows links above it too.
   --render             write the report from what is on disk, no crawling
 ```
 
-`--login`, `--basic`, `--header`, `--cookie` and `--browser` apply as above.
+`--login`, `--basic` and `--browser` apply as above.
 
 ## Signed-in sites
 
@@ -197,12 +196,10 @@ for this run only: the site's own cookies and storage, not the sign-in
 provider's. Nothing is written to disk, so there is no session file to
 leak; the next run signs in again.
 
-For sites behind HTTP authentication or a token, `--basic user:pass`,
-`--header "Authorization: Bearer …"` (repeatable) and `--cookie name=value`
-(repeatable) set the request without a browser window. A header and HTTP
-credentials go only to the site being audited: the fonts, scripts, images
-and frames a page pulls from other hosts get neither, and another host's
-own authentication challenge is declined.
+A staging site behind HTTP authentication is the one case a sign-in window
+cannot cover, since the browser keeps those credentials outside its cookies:
+`--basic user:pass` answers the site's challenge. Only the site's: another
+host's own authentication challenge on the page is declined.
 
 A page that answers with a sign-in form instead of the address asked for is
 reported as exactly that, never audited as if it were the site. `pour mcp`

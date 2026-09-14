@@ -135,44 +135,23 @@ async function applyAuthState(page, state) {
     }, state.origins);
   }
 }
-function parseHeaders(values) {
-  const headers = {};
-  for (const raw of [].concat(values ?? []).filter((v) => typeof v === "string")) {
-    const at = raw.indexOf(":");
-    if (at < 1) throw new Error(`--header expects "Name: value", got "${raw}"`);
-    headers[raw.slice(0, at).trim()] = raw.slice(at + 1).trim();
-  }
-  return headers;
-}
-function parseCookies(values) {
-  return [].concat(values ?? []).filter((v) => typeof v === "string").map((raw) => {
-    const at = raw.indexOf("=");
-    if (at < 1) throw new Error(`--cookie expects name=value, got "${raw}"`);
-    return { name: raw.slice(0, at).trim(), value: raw.slice(at + 1) };
-  });
-}
 function parseBasic(value) {
   if (typeof value !== "string" || !value.includes(":")) throw new Error("--basic expects user:password");
   const at = value.indexOf(":");
   return { username: value.slice(0, at), password: value.slice(at + 1) };
 }
-async function applyRequestAuth(page, { basic, headers, cookies, url } = {}) {
-  if (cookies?.length && url) await page.setCookie(...cookies.map((c) => ({ ...c, url })));
-  const extra = headers && Object.keys(headers).length ? headers : null;
-  if (!basic && !extra) return;
+async function applyBasicAuth(page, { basic: basic2, url }) {
   const site2 = siteOf(new URL(url).hostname);
   const cdp = await page.createCDPSession();
   const answered = /* @__PURE__ */ new Set();
-  cdp.on("Fetch.requestPaused", ({ requestId, request }) => {
-    const params = { requestId };
-    if (extra && urlOnSite(request.url, site2)) params.headers = Object.entries({ ...request.headers, ...extra }).map(([name, value]) => ({ name, value }));
-    cdp.send("Fetch.continueRequest", params).catch(() => {
+  cdp.on("Fetch.requestPaused", ({ requestId }) => {
+    cdp.send("Fetch.continueRequest", { requestId }).catch(() => {
     });
   });
   cdp.on("Fetch.authRequired", ({ requestId, request, authChallenge }) => {
-    const ours = basic && authChallenge?.source !== "Proxy" && urlOnSite(request.url, site2) && !answered.has(requestId);
+    const ours = authChallenge?.source !== "Proxy" && urlOnSite(request.url, site2) && !answered.has(requestId);
     if (ours) answered.add(requestId);
-    const authChallengeResponse = ours ? { response: "ProvideCredentials", username: basic.username, password: basic.password } : { response: "CancelAuth" };
+    const authChallengeResponse = ours ? { response: "ProvideCredentials", username: basic2.username, password: basic2.password } : { response: "CancelAuth" };
     cdp.send("Fetch.continueWithAuth", { requestId, authChallengeResponse }).catch(() => {
     });
   });
@@ -10261,8 +10240,7 @@ if (process.argv[1] === fileURLToPath2(import.meta.url) && /render\.mjs$/.test(p
 var homeDir = path5.dirname(fileURLToPath3(import.meta.url));
 var packaged = fs5.existsSync(path5.join(homeDir, "engine.iife.js"));
 var args = process.argv.slice(2);
-var VALUE_FLAGS = /* @__PURE__ */ new Set(["--workers", "--pause", "--count", "--max", "--viewport", "--depth", "--port", "--top", "--load", "--timeout", "--source", "--month", "--out", "--report", "--basic", "--header", "--cookie", "--browser"]);
-var flagAll = (name) => args.flatMap((a, i) => a === name && args[i + 1] !== void 0 ? [args[i + 1]] : []);
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["--workers", "--pause", "--count", "--max", "--viewport", "--depth", "--port", "--top", "--load", "--timeout", "--source", "--month", "--out", "--report", "--basic", "--browser"]);
 var target;
 for (let i = 0; i < args.length; i++) {
   if (args[i].startsWith("--")) {
@@ -10660,7 +10638,7 @@ async function launchBrowser() {
   return launched;
 }
 var auth = null;
-var requestAuth = null;
+var basic = null;
 try {
   if (hasFlag("--login")) {
     auth = await signIn({
@@ -10669,16 +10647,14 @@ try {
       launch: () => launchSignInBrowser(puppeteer, { executablePath: flagValue("--browser") ? String(flagValue("--browser")) : void 0 })
     });
   }
-  if (flagValue("--basic") || flagAll("--header").length || flagAll("--cookie").length) {
-    requestAuth = { basic: flagValue("--basic") ? parseBasic(String(flagValue("--basic"))) : null, headers: parseHeaders(flagAll("--header")), cookies: parseCookies(flagAll("--cookie")) };
-  }
+  if (flagValue("--basic")) basic = parseBasic(String(flagValue("--basic")));
 } catch (error) {
   console.error(error.message);
   process.exit(1);
 }
 var prepareAuth = async (page, url) => {
   if (auth) await applyAuthState(page, auth);
-  if (requestAuth) await applyRequestAuth(page, { ...requestAuth, url });
+  if (basic) await applyBasicAuth(page, { basic, url });
 };
 var browser = await launchBrowser();
 if (process.platform === "darwin") {
@@ -10760,7 +10736,7 @@ async function auditOne(item) {
     await page.setBypassCSP(true);
     page.on("dialog", (dialog) => dialog.dismiss().catch(() => {
     }));
-    if (auth || requestAuth) await prepareAuth(page, isSite ? item.url : item.url ?? `https://${item.domain}/`);
+    if (auth || basic) await prepareAuth(page, isSite ? item.url : item.url ?? `https://${item.domain}/`);
     row.phase = "load";
     let response = null;
     let navError = null;
