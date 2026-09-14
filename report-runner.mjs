@@ -279,8 +279,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.124",
-  // Release: engine 1.42.4, a name made only of private-use icon glyphs is no name; the verdict crawl's shadow-tree and invisible-character checks.
+  version: "1.2.125",
+  // Release: engine 1.42.4 unchanged; three new simulations (hearing loss on the page's media, afterimages, the age slider), the aura row removed, a larger detail fixation lens, DM Sans only.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",

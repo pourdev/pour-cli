@@ -8401,9 +8401,6 @@ var LIVE_CSS = `
 html{scroll-behavior:auto}
 #main{scroll-margin-top:0}
 td.result{text-align:right;color:var(--muted);width:1%}
-@font-face{font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;src:url(/fonts/inter-var-latin.woff2) format('woff2')}
-@font-face{font-family:'Atkinson Hyperlegible';font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/atkinson-400-latin.woff2) format('woff2')}
-@font-face{font-family:'Atkinson Hyperlegible';font-style:normal;font-weight:700;font-display:swap;src:url(/fonts/atkinson-700-latin.woff2) format('woff2')}
 .state{margin-left:auto;font-family:var(--mono);font-size:.8rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:inline-flex;align-items:center;gap:.5rem}
 .state::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--muted)}
 .state.running::before{background:var(--accent)}
