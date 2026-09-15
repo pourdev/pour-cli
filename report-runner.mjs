@@ -279,8 +279,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.127",
-  // Release: engine 1.42.4 unchanged; the cochlear implant's noise no longer outlives the row.
+  version: "1.2.128",
+  // Release: engine 1.42.4 unchanged; the age slider is the eye only, the bookmarklet says plainly when a site will not run it, the CLI leaves the hearing rows out.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",

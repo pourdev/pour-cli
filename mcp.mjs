@@ -320,8 +320,13 @@ export async function serve({ scriptDir, version = 'dev', executablePath } = {})
       run: (args) => withPage(args, async (page, url, viewport) => {
         let applied = null;
         if (typeof args.filter === 'string' && args.filter.trim()) {
-          applied = resolveFilter(await filterList(), args.filter.trim());
-          if (!applied) throw new Error(`unknown filter "${args.filter}"`);
+          const list = await filterList();
+          applied = resolveFilter(list, args.filter.trim());
+          if (!applied) {
+            const sound = list.sound.find((f) => f.name.toLowerCase() === args.filter.trim().toLowerCase());
+            if (sound) throw new Error(`"${sound.name}" (${sound.label}) is heard, not seen: a screenshot has nothing to show. It runs in the browser extension and the bookmarklet.`);
+            throw new Error(`unknown filter "${args.filter}"`);
+          }
           await applyFilter(page, await filtersBundle(), applied.name, applied.isSensory);
         }
         const data = await page.screenshot({ fullPage: args.fullPage === true, encoding: 'base64' });

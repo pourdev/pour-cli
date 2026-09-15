@@ -362,6 +362,8 @@ if (positional[0] === 'report') {
     const resolved = wanted === true ? null : resolveFilter(filters, wanted);
     if (!resolved) {
       const listing = wanted === true || String(wanted).toLowerCase() === 'list';
+      const sound = listing ? null : filters.sound.find((f) => f.name.toLowerCase() === String(wanted).toLowerCase());
+      if (sound) fail(`"${sound.name}" (${sound.label}) is heard, not seen: a screenshot has nothing to show. Try it in the browser extension or the bookmarklet.`);
       if (!listing) console.error(`pour: unknown filter "${wanted}"\n`);
       console.log('vision filters:');
       for (const f of filters.vision) console.log(`  ${f.name.padEnd(26)} ${dim(f.label)}`);

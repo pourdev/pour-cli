@@ -69,7 +69,10 @@ export function listFilters(filtersSource) {
   const label = (name) => MODE_LABELS[name] ?? SENSORY_FILTERS[name]?.label ?? '';
   return {
     vision: Object.keys(CSS_FILTERS).filter((n) => n !== 'none' && !NOT_IN_SCREENSHOTS.has(n)).map((name) => ({ name, label: label(name) })),
-    sensory: Object.keys(SENSORY_FILTERS).filter((n) => n !== 'none').map((name) => ({ name, label: label(name) })),
+    // Rows marked `sound` are heard, not seen (hearing loss, tinnitus,
+    // the cochlear implant): a PNG of one is the page plus a picker.
+    sensory: Object.keys(SENSORY_FILTERS).filter((n) => n !== 'none' && !SENSORY_FILTERS[n].sound).map((name) => ({ name, label: label(name) })),
+    sound: Object.keys(SENSORY_FILTERS).filter((n) => SENSORY_FILTERS[n].sound).map((name) => ({ name, label: label(name) })),
   };
 }
 
