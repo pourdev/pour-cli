@@ -279,8 +279,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.125",
-  // Release: engine 1.42.4 unchanged; three new simulations (hearing loss on the page's media, afterimages, the age slider), the aura row removed, a larger detail fixation lens, DM Sans only.
+  version: "1.2.126",
+  // Release: engine 1.42.4 unchanged; tinnitus and cochlear implant rows, noise damage on the hearing row.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
