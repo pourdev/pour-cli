@@ -10000,6 +10000,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
         <p>
           The crawl started at <a href="${escapeHtml(status.start)}" rel="external">${escapeHtml(status.start)}</a> and followed
           every link to a page on ${status.sameHost ? "the same host" : `${escapeHtml(status.site)} or its subdomains`}${status.scope ? ` under <code>${escapeHtml(status.scope)}/</code>` : ""}, stopping at ${int(status.count)} pages.
+          ${status.query ? "Addresses that differ only in their query string were kept as separate pages." : "Addresses that differ only in their query string were treated as one page, so a listing's pagination, sorting and filters were audited once."}
           It found ${int(status.discovered ?? 0)} addresses${status.queued ? ` and left ${int(status.queued)} unvisited` : ""}.
           ${status.robots?.fetched ? `The site's robots.txt (${int(status.robots.rules)} rule${status.robots.rules === 1 ? "" : "s"}) was respected.` : "No robots.txt could be read."}
           Links to files were not followed. Tracking parameters were removed so a page was not counted twice.
@@ -10277,6 +10278,7 @@ var count = flagValue("--count") ? Number(flagValue("--count")) : Infinity;
 var max = Number(flagValue("--max", 100));
 var maxDepth = Number(flagValue("--depth", Infinity));
 var sameHost = hasFlag("--same-host");
+var keepQuery = hasFlag("--query");
 var wholeSite = hasFlag("--whole-site");
 var [vw, vh] = String(flagValue("--viewport", "1440x900")).split("x").map(Number);
 var recheck = hasFlag("--recheck");
@@ -10375,7 +10377,7 @@ function pickRunDir() {
   const latest = runs.at(-1);
   if (latest && !fresh) {
     const status = readJson(path5.join(slugDir, latest, "status.json"));
-    const sameStart = !isSite || recheck || renderOnly || !status?.start || (status.scope ?? null) === scope;
+    const sameStart = !isSite || recheck || renderOnly || !status?.start || (status.scope ?? null) === scope && (status.query ?? false) === keepQuery;
     if (status && sameStart && (!status.done || recheck || renderOnly)) return path5.join(slugDir, latest);
   }
   return path5.join(slugDir, localStamp());
@@ -10477,6 +10479,7 @@ var meta = {
   site,
   sameHost,
   scope,
+  query: keepQuery,
   list: listMeta ? { file: path5.basename(listFile), id: listMeta.id, date: listMeta.date, source: listMeta.source, name: listMeta.name, url: listMeta.url } : listFile ? { file: path5.basename(listFile) } : null,
   total: list?.length ?? null,
   count: isSite ? max : Number.isFinite(count) ? count : list?.length ?? null,
@@ -10536,7 +10539,7 @@ if (isSite) {
   if (alreadyDone) console.log(`${alreadyDone} refused page${alreadyDone === 1 ? "" : "s"} already rechecked this month and left alone (--again includes them)`);
 }
 if (list && !recheck) while (cursor < list.length && (list[cursor].tag || done.has(list[cursor].rank))) cursor++;
-console.log(`${label} with the pour engine: ${isSite ? `crawling ${sameHost ? host : `*.${site}`}${scope ? `${scope}/ and below` : ""} up to ${max} pages` : `${list.length} domains${tally.tagged ? `, ${tally.tagged} tagged unavailable` : ""}${Number.isFinite(count) ? `, stopping at ${count} audited` : ""}`} \xB7 ${done.size ? `resuming with ${audited} audited, ${skipped} skipped` : "fresh run"}${recheck ? ` \xB7 recheck of ${recheckTotal} refused pages` : ""} \xB7 ${workers} workers \xB7 ${showDir(runDir)}`);
+console.log(`${label} with the pour engine: ${isSite ? `crawling ${sameHost ? host : `*.${site}`}${scope ? `${scope}/ and below` : ""} up to ${max} pages${keepQuery ? ", query strings kept" : ""}` : `${list.length} domains${tally.tagged ? `, ${tally.tagged} tagged unavailable` : ""}${Number.isFinite(count) ? `, stopping at ${count} audited` : ""}`} \xB7 ${done.size ? `resuming with ${audited} audited, ${skipped} skipped` : "fresh run"}${recheck ? ` \xB7 recheck of ${recheckTotal} refused pages` : ""} \xB7 ${workers} workers \xB7 ${showDir(runDir)}`);
 var robots = { fetched: false, rules: [] };
 if (isSite) {
   try {
@@ -10575,7 +10578,10 @@ function normalise(href, base) {
   url.hostname = url.hostname.toLowerCase();
   if (!onSite(url.hostname)) return null;
   if (SKIP_EXT.test(url.pathname)) return null;
-  for (const key of [...url.searchParams.keys()]) if (TRACKING.test(key)) url.searchParams.delete(key);
+  if (keepQuery) {
+    for (const key of [...url.searchParams.keys()]) if (TRACKING.test(key)) url.searchParams.delete(key);
+    url.searchParams.sort();
+  } else url.search = "";
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
   if (!inScope(url.pathname)) return null;
   return url.toString();

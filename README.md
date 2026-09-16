@@ -165,6 +165,8 @@ and its subdomains, and `--same-host` narrows it to the one host.
   --max <n>            pages (default 100)
   --depth <n>          links deep from the start
   --same-host          this host only, not its subdomains
+  --query              keep query strings: /list?page=2 is its own page
+                       (by default a page is its path, and ?page=2 is not)
   --whole-site         follow links above the path given too
   --workers <n>        parallel pages (4 for a site, 8 for a list)
   --pause <ms>         gap between pages per worker

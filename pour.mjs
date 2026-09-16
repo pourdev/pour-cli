@@ -145,6 +145,8 @@ pour report <target>
   --max <n>            pages (default 100)
   --depth <n>          links deep from the start
   --same-host          this host only, not its subdomains
+  --query              keep query strings: /list?page=2 is its own page
+                       (by default a page is its path, and ?page=2 is not)
   --whole-site         follow links above the path given too
   --workers <n>        parallel pages (4 for a site, 8 for a list)
   --pause <ms>         gap between pages per worker
@@ -232,7 +234,7 @@ if (positional[0] === 'report') {
     viewport: ['--viewport'], load: ['--load'], timeout: ['--timeout'], port: ['--port'], out: ['--out'], report: ['--report'],
     basic: ['--basic'], browser: ['--browser'],
   };
-  const SWITCHES = { 'same-host': '--same-host', 'whole-site': '--whole-site', fresh: '--fresh', recheck: '--recheck', render: '--render', 'no-open': '--no-open', yes: '--yes', login: '--login' };
+  const SWITCHES = { 'same-host': '--same-host', 'whole-site': '--whole-site', query: '--query', fresh: '--fresh', recheck: '--recheck', render: '--render', 'no-open': '--no-open', yes: '--yes', login: '--login' };
   const runnerArgs = [target];
   for (const [name, value] of flags) {
     if (VALUES[name]) { for (const v of [].concat(value)) for (const f of VALUES[name]) runnerArgs.push(f, String(v)); }
