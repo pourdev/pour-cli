@@ -153,10 +153,13 @@ cleanly; the same command resumes.
 ```sh
 pour report yoursite.com --max 200 --report reports/yoursite.html
 pour report https://yoursite.com/help        # /help and the pages under it, nothing above
+pour report https://help.yoursite.com/       # help.yoursite.com and below, not www.yoursite.com
 ```
 
 An address with a path keeps the crawl under that path; `--whole-site`
-follows links above it too.
+follows links above it too. An address on a subdomain keeps the crawl on
+that subdomain and its own; a start on the main host covers the whole site
+and its subdomains, and `--same-host` narrows it to the one host.
 
 ```
   --max <n>            pages (default 100)

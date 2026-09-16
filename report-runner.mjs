@@ -10354,12 +10354,13 @@ if (mode === "top") {
 } else {
   startUrl = new URL(target);
   host = startUrl.hostname.toLowerCase();
-  site = registrable(host);
+  site = host.replace(/^www\./, "");
   slug = site;
   label = site;
   if (!wholeSite) scope = scopeOf(startUrl);
 }
 var inScope = (pathname) => !scope || pathname === scope || pathname.startsWith(`${scope}/`);
+var onSite = (hostname) => sameHost ? hostname === host : hostname === site || hostname.endsWith(`.${site}`);
 var fullList = null;
 if (listFile) {
   fullList = readList(listFile);
@@ -10572,7 +10573,7 @@ function normalise(href, base) {
   if (!/^https?:$/.test(url.protocol)) return null;
   url.hash = "";
   url.hostname = url.hostname.toLowerCase();
-  if (sameHost ? url.hostname !== host : registrable(url.hostname) !== site) return null;
+  if (!onSite(url.hostname)) return null;
   if (SKIP_EXT.test(url.pathname)) return null;
   for (const key of [...url.searchParams.keys()]) if (TRACKING.test(key)) url.searchParams.delete(key);
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
@@ -10784,7 +10785,7 @@ async function auditOne(item) {
     }
     if (isSite) {
       const finalHost = new URL(row.finalUrl).hostname.toLowerCase();
-      if (sameHost ? finalHost !== host : registrable(finalHost) !== site) {
+      if (!onSite(finalHost)) {
         row.reason = "redirected-away";
         row.detail = finalHost;
         return row;
@@ -10803,7 +10804,12 @@ async function auditOne(item) {
     }
     row.phase = "consent";
     const clicked = await Promise.race([acceptConsent(page, true).catch(() => null), new Promise((r) => setTimeout(() => r(null), 5e3))]);
-    if (clicked) row.consent = clicked;
+    if (clicked) {
+      row.consent = clicked;
+      await page.evaluate(() => document.activeElement?.blur?.()).catch(() => {
+      });
+      await new Promise((r) => setTimeout(r, 300));
+    }
     row.phase = "stats";
     cdp = await page.createCDPSession();
     const { frameTree } = await cdp.send("Page.getFrameTree");

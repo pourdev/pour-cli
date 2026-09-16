@@ -140,7 +140,8 @@ pour report <target>
   page of every domain in a list file, with a live progress screen while it
   runs and one standalone HTML report at the end. Ctrl+C stops cleanly; the
   same command resumes. An address with a path stays under it: /help audits
-  /help and the pages below it.
+  /help and the pages below it. An address on a subdomain stays on it:
+  inclusion.hsbc.com is crawled, www.hsbc.com is not.
   --max <n>            pages (default 100)
   --depth <n>          links deep from the start
   --same-host          this host only, not its subdomains
