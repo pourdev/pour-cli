@@ -9950,7 +9950,9 @@ async function render(runDir2, { publicCopy = true } = {}) {
       title = `${escapeHtml(status.site)}, audited page by page \xB7 pour`;
       description = `The pour engine over ${pagesOf(s.pages)} of ${status.site}: how many fail WCAG 2.2 AA, what fails most, and where on each page.`;
       intro = `${engineLead} ran over ${pagesOf(s.pages)} of <a href="${escapeHtml(status.start)}" rel="external">${escapeHtml(status.site)}</a>,
-          following links ${status.scope ? `under <code>${escapeHtml(status.scope)}/</code>` : `from the front page${status.sameHost ? "" : " across the site and its subdomains"}`}. Each page was
+          following links ${status.scope ? `under <code>${escapeHtml(status.scope)}/</code>` : `from the front page${status.sameHost ? "" : " across the site and its subdomains"}`}.
+          ${status.discovered != null ? `It found ${int(status.discovered)} address${status.discovered === 1 ? "" : "es"}: ${int(s.pages)} ${s.pages === 1 ? "was" : "were"} audited${s.skipped ? `, ${int(s.skipped)} could not be` : ""}${status.queued ? `, and ${int(status.queued)} ${status.queued === 1 ? "was" : "were"} left unvisited at the page cap` : ""}${s.skipped || status.queued ? ' (<a href="#method">why</a>)' : ""}.` : ""}
+          Each page was
           loaded once in a desktop window and checked against WCAG&nbsp;2.2 AA. No scrolling,
           no clicking. The numbers count what the engine could prove; checks that need a person are
           not included.${partial ? " The run is not finished; these are the numbers so far." : ""}`;
