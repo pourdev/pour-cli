@@ -8530,6 +8530,7 @@ function createTally() {
     rules: /* @__PURE__ */ new Map(),
     scs: /* @__PURE__ */ new Map(),
     severity: new Map(IMPACTS.map((i) => [i, { pages: 0, elements: 0 }])),
+    worst: new Map(IMPACTS.map((i) => [i, 0])),
     complexity: { elements: 0, images: 0, headings: 0, inputs: 0, links: 0, buttons: 0, ariaAttrs: 0 },
     bands: BANDS.map(([from, to, label2]) => ({ from, to, label: label2, pages: 0, failingPages: 0, sumFailing: 0, sumReview: 0 })),
     review: /* @__PURE__ */ new Map(),
@@ -8571,8 +8572,10 @@ function add(t, row, opts = {}) {
   t.sumReview += rv;
   bump(t.counts, f);
   bump(t.reviewCounts, rv);
-  if (f > 0) t.failingPages += 1;
-  else {
+  if (f > 0) {
+    t.failingPages += 1;
+    if (worst) t.worst.set(worst, (t.worst.get(worst) ?? 0) + 1);
+  } else {
     t.clean += 1;
     if (t.cleanSample.length < CLEAN_SAMPLE) t.cleanSample.push(brief);
   }
@@ -8684,6 +8687,8 @@ function summarize(t, opts = {}) {
     histogram: BUCKETS.map(([, , label2], i) => ({ label: label2, pages: t.hist[i] })),
     rules: [...t.rules.entries()].map(([id, e]) => ({ id, help: helpOf(id), scs: ruleScs(id), impact: e.impact, pages: e.pages, elements: e.elements, pagesPct: pct(e.pages), perPage: n ? e.elements / n : 0 })).sort((a, b) => b.pages - a.pages || b.elements - a.elements),
     criteria: [...t.scs.entries()].map(([sc2, e]) => ({ sc: sc2, name: scByNum.get(sc2)?.name ?? "", level: scByNum.get(sc2)?.level ?? "", pages: e.pages, elements: e.elements, pagesPct: pct(e.pages), perPage: n ? e.elements / n : 0 })).sort((a, b) => b.pages - a.pages),
+    // Each failing page once, in the segment of its worst failure.
+    worst: IMPACTS.map((impact) => ({ impact, pages: t.worst.get(impact) ?? 0, pagesPct: pct(t.worst.get(impact) ?? 0) })),
     severity: IMPACTS.map((impact) => ({ impact, ...t.severity.get(impact), pagesPct: pct(t.severity.get(impact).pages), perPage: n ? t.severity.get(impact).elements / n : 0 })).filter((x) => x.elements > 0),
     complexity: Object.fromEntries(Object.entries(t.complexity).map(([k, v]) => [k, n ? v / n : 0])),
     bands: t.bands.map((b) => ({ label: b.label, pages: b.pages, failingPct: pct(b.failingPages, b.pages), perPage: b.pages ? b.sumFailing / b.pages : 0, reviewPerPage: b.pages ? b.sumReview / b.pages : 0 })),
@@ -8870,9 +8875,20 @@ var disclosure = (count2, label2, body, tone = "moderate") => `<details class="g
 var dot = (impact) => `<span class="dot impact-${escapeHtml(impact ?? "moderate")}" aria-hidden="true"></span>`;
 function severityViz(s, what = "pages") {
   const impacts = ["critical", "serious", "moderate", "minor"];
-  const counts = Object.fromEntries(impacts.map((i) => [i, { elements: s.severity.find((x) => x.impact === i)?.elements ?? 0 }]));
-  const total = s.totalFailing;
+  const byPage = Boolean(s.worst);
+  const unit = what.slice(0, -1);
+  const counts = Object.fromEntries(impacts.map((i) => [i, { elements: byPage ? s.worst.find((x) => x.impact === i)?.pages ?? 0 : s.severity.find((x) => x.impact === i)?.elements ?? 0 }]));
+  const total = byPage ? s.failingPages : s.totalFailing;
   if (!total) return "";
+  const compactN = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 1 : 2)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}K` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
+  if (byPage) {
+    const donut2 = renderImpactDonut({ impacts, counts, totalElements: total, hidden: /* @__PURE__ */ new Set() }).replace(/(<text class="donut-total"[^>]*>)[^<]*(<\/text>)/, `$1${compactN(total)}$2`).replace(/(<text class="donut-caption"[^>]*>)[^<]*(<\/text>)/, `$1${total === 1 ? unit : what} fail$2`).replace(/<title>(\w+) — (\d+) elements? \((\d+)%\)<\/title>/g, (m, impact, n, share) => `<title>${impact}: ${int(Number(n))} ${what} (${share}% of the failing ${what})</title>`);
+    const rows2 = s.worst.filter((x) => x.pages).map((x) => {
+      const sev = s.severity.find((y) => y.impact === x.impact);
+      return `<li class="impact impact-${escapeHtml(x.impact)}"><span class="dot"></span>${escapeHtml(x.impact)}<span class="share">${pc(x.pagesPct)} of ${what} \xB7 ${compactN(sev?.elements ?? 0)} elements</span><span class="pill-count">${int(x.pages)} ${what}</span></li>`;
+    }).join("");
+    return `<div class="viz" role="group" aria-label="Failing ${what} by their worst severity">${donut2}<ul class="impact-summary">${rows2}<li class="impact impact-review review-row"><span class="dot"></span>review<span class="share">${pc(s.pages ? 100 * s.pagesWithReview / s.pages : 0)} of ${what} \xB7 ${compactN(s.totalReview)} elements</span><span class="pill-count">${int(s.pagesWithReview)} ${what}</span></li><li class="impact impact-good"><span class="dot"></span>clean<span class="share">${pc(s.pages ? 100 * s.clean / s.pages : 0)} of ${what}, nothing found</span><span class="pill-count">${int(s.clean)} ${what}</span></li></ul></div>`;
+  }
   const compact = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 1 : 2)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}K` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
   const donut = renderImpactDonut({ impacts, counts, totalElements: total, hidden: /* @__PURE__ */ new Set() }).replace(/(<text class="donut-total"[^>]*>)[^<]*(<\/text>)/, `$1${compact(total)}$2`).replace(/<title>(\w+) — (\d+) elements? \((\d+)%\)<\/title>/g, (m, impact, n, share) => `<title>${impact}: ${int(Number(n))} elements (${share}%)</title>`);
   const rows = s.severity.map((x) => `<li class="impact impact-${escapeHtml(x.impact)}"><span class="dot"></span>${escapeHtml(x.impact)}<span class="share">${pc(x.pagesPct)} of ${what}</span><span class="pill-count">${int(x.elements)}</span></li>`).join("");
@@ -8923,8 +8939,8 @@ function commonSections(s, what = "pages", engine = "the engine") {
   const What = what[0].toUpperCase() + what.slice(1);
   return `
     <section class="docs" id="spread" aria-labelledby="spread-title">
-      <h2 id="spread-title">By failures</h2>
-      ${miniStats([[int(s.totalFailing), "failing elements found in total"]])}
+      <h2 id="spread-title">${what === "pages" ? "By page" : "By failures"}</h2>
+      ${what === "pages" ? miniStats([[int(s.totalFailing), `failing elements across the ${int(s.failingPages)} failing pages`], [dec(s.failingPages ? s.totalFailing / s.failingPages : 0), "on the average failing page"]]) : miniStats([[int(s.totalFailing), "failing elements found in total"]])}
       <p>
         Every failing element on every ${unit} was counted, and the ${what} grouped by that count.
         Most ${what} have a handful to a few dozen; a small group run into the hundreds, and they
@@ -9005,12 +9021,12 @@ function commonSections(s, what = "pages", engine = "the engine") {
     </section>
 `;
 }
-function reviewSection(s, what = "pages", engine = "the engine") {
+function reviewSection(s, what = "pages", engine = "the engine", title = "Not sure") {
   const pct = (part) => s.pages ? 100 * part / s.pages : 0;
   const unit = what.slice(0, -1);
   const What = what[0].toUpperCase() + what.slice(1);
   return `    <section class="docs" id="review" aria-labelledby="review-title">
-      <h2 id="review-title">Not sure</h2>
+      <h2 id="review-title">${title}</h2>
       ${miniStats([[int(s.totalReview), "elements handed to a person"], [pc(pct(s.pagesWithReview)), `of ${what} have something to review`]])}
       <p>
         Nothing above is a guess. When ${engine} cannot be sure, it hands the element to a
@@ -9957,49 +9973,106 @@ async function render(runDir2, { publicCopy = true } = {}) {
           no clicking. The numbers count what the engine could prove; checks that need a person are
           not included.${partial ? " The run is not finished; these are the numbers so far." : ""}`;
       const withFailures = audited2.filter((r) => r.violationElements > 0).sort((a, b) => b.violationElements - a.violationElements);
-      nav = [...COMMON_NAV, { id: "sections", label: "By section" }, { id: "breadth", label: "By breadth" }, { id: "ends", label: "Site scores" }, ...rows.length && !publicPage ? [{ id: "every", label: "Every page" }] : [], ...rows.length ? [{ id: "where", label: "Where" }] : [], { id: "method", label: "Method" }, { id: "review", label: "Not sure" }, { id: "limits", label: "Limits" }];
+      const fold = (label2, body) => `<details class="group"><summary><span class="group-main">${label2}</span></summary>${body}</details>`;
+      const topSix = [...s.rules].sort((a, b) => b.pages - a.pages || b.elements - a.elements).slice(0, 6);
+      const sixShare = s.totalFailing ? 100 * topSix.reduce((t, e) => t + e.elements, 0) / s.totalFailing : 0;
+      intro += ` Across the ${int(s.failingPages)} failing page${s.failingPages === 1 ? "" : "s"} there ${s.totalFailing === 1 ? "is" : "are"} ${int(s.totalFailing)} failing element${s.totalFailing === 1 ? "" : "s"} from ${int(s.rules.length)} rule${s.rules.length === 1 ? "" : "s"}${topSix.length > 1 ? `, and ${topSix.length === 6 ? "six" : topSix.length} of the rules account for ${pc(sixShare)} of them` : ""}.`;
+      nav = [{ id: "pages", label: "Which pages" }, { id: "rules", label: "Which rules" }, { id: "spread", label: "How much per page" }, { id: "review", label: "Needs a person" }, { id: "more", label: "More" }];
+      const worstDot = (b) => b.worst ? dot(b.worst) : "";
+      const fixFirst = s.widest;
+      const sectionsRanked = [...s.bySection].sort((a, b) => b.pages * b.failingPct - a.pages * a.failingPct || b.pages - a.pages);
+      const sectionRows = (rowsIn) => table(
+        [["Section", false], ["Pages", true], ["With failures", true], ["Failing elements per page", true], ["Median", true]],
+        rowsIn.map((g) => `<tr><th scope="row">${escapeHtml(g.key)}</th>${num(int(g.pages))}${num(pc(g.failingPct))}${num(dec(g.perPage))}${num(int(g.median))}</tr>`).join(""),
+        { label: "Failures by section of the site", compact: rowsIn.length > 12 }
+      );
+      const ruleRow = (e, full) => `<tr><th scope="row">${dot(e.impact)}${ruleCell(e.id, e.help)}</th><td>${e.scs.map(scLink).join(", ") || "best practice"}</td>${num(int(e.pages))}${full ? num(pc(e.pagesPct)) + num(dec(e.perPage)) : ""}${num(int(e.elements))}</tr>`;
+      const rulesByPages = [...s.rules].sort((a, b) => b.pages - a.pages || b.elements - a.elements);
+      const common = rulesByPages.filter((e) => e.pagesPct >= 1);
+      const rare = rulesByPages.filter((e) => e.pagesPct < 1);
       extraSections = `
-      <section class="docs" id="sections" aria-labelledby="sections-title">
-        <h2 id="sections-title">By section</h2>
-        <p>Pages grouped by the first part of their address${status.sameHost ? "" : ", with the host shown where it is not the main one"}. A section with one page in it is named by that page.</p>
-        ${(() => {
-        const t = groupTable("Section", s.bySection, "Failures by section of the site");
-        return s.bySection.length > 12 ? disclosure(s.bySection.length, `Every section, ${int(s.bySection.length)} rows`, t) : t;
-      })()}
-      </section>
-      ${breadthSection(s, briefLink)}
-      ${twoEnds(s, briefLink, "page")}
-      ${rows.length && !publicPage ? `
-      <section class="docs" id="every" aria-labelledby="every-title">
-        <h2 id="every-title">Every page</h2>
-        <p>All ${pagesOf(audited2.length)} and what the engine found on each.</p>
-        ${(() => {
-        const t = `${table(
-          [["Page", false], ["Depth", true], ["Failing", true], ["Rules", true], ["Review", true], ["Elements", true]],
-          audited2.sort((a, b) => a.depth - b.depth || a.url.localeCompare(b.url)).map((r) => `<tr><th scope="row">${pageLink(r)}</th>${num(int(r.depth ?? 0))}${num(int(r.violationElements))}${num(int(r.violations.length))}${num(int(r.reviewElements))}${num(int(r.elements))}</tr>`).join(""),
-          { compact: true, sortable: true, label: "Every page audited" }
-        )}`;
-        return audited2.length > 60 ? disclosure(audited2.length, `Every page, ${int(audited2.length)} rows`, t) : t;
-      })()}
-      </section>
-      <section class="docs" id="where" aria-labelledby="where-title">
-        <h2 id="where-title">Where, on each page</h2>
-        <p>
-          Every page with a failure, worst first, with the rules it failed and up to five
-          of the failing elements for each.
+      <section class="docs" id="pages" aria-labelledby="pages-title">
+        <h2 id="pages-title">Which pages</h2>
+        ${miniStats([...fixFirst.length ? [[int(fixFirst[0].criteria), `criteria broken on the widest page`]] : [], ...s.clean ? [[int(s.clean), `page${s.clean === 1 ? "" : "s"} with nothing proved wrong`]] : []])}
+        ${fixFirst.length ? `<p>
+          The pages to fix first: ranked by how many criteria each one breaks, then by how many
+          elements fail on it. The dot is the worst severity on the page. Click a heading to sort.
         </p>
-        ${withFailures.map((r) => `<details><summary>${escapeHtml(pathOf(r.url))} <span class="dim">\xB7 ${int(r.violationElements)} failing element${r.violationElements === 1 ? "" : "s"} in ${int(r.violations.length)} rule${r.violations.length === 1 ? "" : "s"}</span></summary>
+        ${(() => {
+        const fixRows = (list2) => table(
+          [["Page", false], ["Criteria", true], ["Rules", true], ["Failing", true], ["Elements", true]],
+          list2.map((b) => `<tr><th scope="row">${worstDot(b)}${briefLink(b)}</th>${num(int(b.criteria))}${num(int(b.rules))}${num(int(b.failing))}${num(int(b.elements))}</tr>`).join(""),
+          { compact: list2.length > 20, sortable: true, label: "The pages to fix first" }
+        );
+        return fixFirst.length > 25 ? `${fixRows(fixFirst.slice(0, 25))}${disclosure(fixFirst.length, `The ${int(fixFirst.length)} pages to fix first, in one table`, fixRows(fixFirst))}` : fixRows(fixFirst);
+      })()}` : "<p>Every page had nothing the engine could prove wrong.</p>"}
+        ${sectionsRanked.length > 1 ? `<h3>By section</h3>
+        <p>Pages grouped by the first part of their address${status.sameHost ? "" : ", with the host shown where it is not the main one"}, the sections with the most failing pages first.</p>
+        ${sectionRows(sectionsRanked.slice(0, 10))}
+        ${sectionsRanked.length > 10 ? disclosure(sectionsRanked.length, `Every section, ${int(sectionsRanked.length)} rows`, sectionRows(sectionsRanked)) : ""}` : ""}
+        ${s.clean ? `<p>Nothing the engine could prove wrong is a floor, not a pass; the human checks still apply.</p>
+        ${disclosure(s.cleanSample.length, `${s.cleanSample.length < s.clean ? `The first ${int(s.cleanSample.length)} clean pages` : `The ${int(s.clean)} clean page${s.clean === 1 ? "" : "s"}`}`, table(
+        [["Page", false], ["Failing", true], ["Review", true], ["Elements", true]],
+        s.cleanSample.map((b) => `<tr><th scope="row">${dot("good")}${briefLink(b)}</th>${num("0")}${num(int(b.review))}${num(int(b.elements))}</tr>`).join(""),
+        { compact: true, label: "Pages with nothing proved wrong" }
+      ), "good")}` : ""}
+        ${rows.length && !publicPage ? `
+        ${disclosure(audited2.length, `Every page, ${pagesOf(audited2.length)}`, table(
+        [["Page", false], ["Depth", true], ["Failing", true], ["Rules", true], ["Review", true], ["Elements", true]],
+        [...audited2].sort((a, b) => a.depth - b.depth || a.url.localeCompare(b.url)).map((r) => `<tr><th scope="row">${pageLink(r)}</th>${num(int(r.depth ?? 0))}${num(int(r.violationElements))}${num(int(r.violations.length))}${num(int(r.reviewElements))}${num(int(r.elements))}</tr>`).join(""),
+        { compact: true, sortable: true, label: "Every page audited" }
+      ))}
+        ${withFailures.length ? disclosure(withFailures.length, "Where, on each page: the rules each page failed and up to five of the failing elements", withFailures.map((r) => `<details><summary>${escapeHtml(pathOf(r.url))} <span class="dim">\xB7 ${int(r.violationElements)} failing element${r.violationElements === 1 ? "" : "s"} in ${int(r.violations.length)} rule${r.violations.length === 1 ? "" : "s"}</span></summary>
           <p class="note">${escapeHtml(r.title || "")} \xB7 <a href="${escapeHtml(r.url)}" rel="external">${escapeHtml(r.url)}</a></p>
           ${table(
         [["Rule", false], ["Criterion", false], ["Elements", true], ["Where", false]],
-        [...r.violations].sort((a, b) => b.nodes - a.nodes).map((v) => `<tr><th scope="row">${dot(v.impact)}${ruleCell(v.id, v.help)}</th><td>${scsOf(v).map(scLink).join(", ") || "best practice"}</td>${num(int(v.nodes))}<td>${(v.sample ?? []).map((x) => `<span class="sample"><code>${escapeHtml(x.target)}</code><span class="help">${escapeHtml(x.message)}</span></span>`).join("")}${v.nodes > (v.sample?.length ?? 0) ? `<span class="dim">and ${int(v.nodes - (v.sample?.length ?? 0))} more</span>` : ""}</td></tr>`).join(""),
+        [...r.violations].sort((a, b) => b.nodes - a.nodes).map((v) => `<tr><th scope="row">${dot(v.impact)}${ruleCell(v.id, v.help)}</th><td>${scsOf(v).map(scLink).join(", ") || "best practice"}</td>${num(int(v.nodes))}<td>${(v.sample ?? []).map((x) => `<span class="sample"><code>${escapeHtml(x.target)}</code><span class="help">${escapeHtml(x.message ?? "")}</span></span>`).join("")}</td></tr>`).join(""),
         { compact: true, label: `Failures on ${pathOf(r.url)}` }
       )}
-        </details>`).join("")}
-      </section>` : ""}
-      <section class="docs" id="method" aria-labelledby="method-title">
-        <h2 id="method-title">Method</h2>
+        </details>`).join("")) : ""}` : ""}
+      </section>
+
+      <section class="docs" id="rules" aria-labelledby="rules-title">
+        <h2 id="rules-title">Which rules</h2>
+        ${rulesByPages.length ? miniStats([[int(rulesByPages.length), `rule${rulesByPages.length === 1 ? "" : "s"} failed somewhere`], [pc(rulesByPages[0].pagesPct), `of pages fail the most common one`]]) : ""}
         <p>
+          ${topSix.length ? `${topSix.length === 6 ? "Six rules" : `${topSix.length} rule${topSix.length === 1 ? "" : "s"}`} make up most of what was found:
+          ${topSix.map((e, i) => `${i === topSix.length - 1 && topSix.length > 1 ? "and " : ""}${escapeHtml(e.help.toLowerCase().replace(/\.$/, ""))} on ${pc(e.pagesPct)} of pages`).join(", ")}.` : "Nothing failed."}
+          A rule is one check; the criterion is the part of WCAG&nbsp;2.2 it tests. Ranked by the pages
+          each rule fails on. Elements per page is the average over all ${int(s.pages)} pages, including the ones that passed.
+        </p>
+        ${(() => {
+        const seen2 = topSix.filter((e) => WHO[e.id]);
+        return seen2.length ? `<p>Behind each rule is a person locked out:</p><ul class="who">${seen2.map((e) => `<li><strong>${escapeHtml(WHO[e.id][0])}</strong>${escapeHtml(WHO[e.id][1])}</li>`).join("")}</ul>` : "";
+      })()}
+        ${common.length ? table([["Rule", false], ["Criterion", false], ["Pages", true], ["Share of pages", true], ["Elements per page", true], ["Elements", true]], common.map((e) => ruleRow(e, true)).join(""), { label: "Failures by rule, on at least one page in a hundred", compact: common.length > 12 }) : ""}
+        ${rare.length ? disclosure(rare.length, `The rule${rare.length === 1 ? "" : "s"} that failed on fewer than one page in a hundred`, table([["Rule", false], ["Criterion", false], ["Pages", true], ["Elements", true]], rare.map((e) => ruleRow(e, false)).join(""), { compact: true, label: "Failures by rule, on fewer than one page in a hundred" })) : ""}
+      </section>
+
+      <section class="docs" id="spread" aria-labelledby="spread-title">
+        <h2 id="spread-title">How much is wrong on a page</h2>
+        ${miniStats([[int(s.totalFailing), `failing elements across the ${int(s.failingPages)} failing pages`], [dec(s.failingPages ? s.totalFailing / s.failingPages : 0), "on the average failing page"]])}
+        <p>
+          Every failing element on every page was counted, and the pages grouped by that count.
+          Each row is one group, and the bar is how many pages fall in it:
+        </p>
+        ${bars(s.histogram, (b) => b.pages, (b) => b.label, (b) => `${int(b.pages)} <span class="dim">(${pc(s.pages ? 100 * b.pages / s.pages : 0)})</span>`, ["Failing elements", "Pages"])}
+        <p>
+          Elements say how much is wrong; criteria say how many kinds of thing are wrong, forty
+          low-contrast links being one criterion. Pages by the number of criteria they fail:
+        </p>
+        ${bars(s.breadth, (b) => b.pages, (b) => b.label, (b) => `${int(b.pages)} <span class="dim">(${pc(s.pages ? 100 * b.pages / s.pages : 0)})</span>`, ["Criteria failed", "Pages"])}
+      </section>
+      ${reviewSection(s, "pages", engineShort, "What needs a person")}
+      <section class="docs" id="more" aria-labelledby="more-title">
+        <h2 id="more-title">More</h2>
+        <p>How the pages were built, how the crawl was run, and what a report like this cannot tell you.</p>
+        ${fold("The shape of the pages", `
+          ${miniStats([[int(s.complexity.elements), "elements on the average page"], [int(s.complexity.ariaAttrs), "ARIA attributes on the average page"]])}
+          <p>The average page also has ${int(s.complexity.images)} images, ${int(s.complexity.headings)} headings, ${int(s.complexity.links)} links, ${int(s.complexity.buttons)} buttons and ${int(s.complexity.inputs)} form fields.${s.bands.some((b) => b.pages) ? " Bigger pages have more to fail:" : ""}</p>
+          ${s.bands.some((b) => b.pages) ? table([["Elements on the page", false], ["Pages", true], ["With failures", true], ["Failing elements per page", true], ["Elements to review per page", true]], s.bands.filter((b) => b.pages).map((b) => `<tr><th scope="row">${b.label}</th>${num(int(b.pages))}${num(pc(b.failingPct))}${num(dec(b.perPage))}${num(dec(b.reviewPerPage))}</tr>`).join(""), { label: "Failures by page size" }) : ""}`)}
+        ${fold("Method", `
+        <p id="method">
           The crawl started at <a href="${escapeHtml(status.start)}" rel="external">${escapeHtml(status.start)}</a> and followed
           every link to a page on ${status.sameHost ? "the same host" : `${escapeHtml(status.site)} or its subdomains`}${status.scope ? ` under <code>${escapeHtml(status.scope)}/</code>` : ""}, stopping at ${int(status.count)} pages.
           ${status.query ? "Addresses that differ only in their query string were kept as separate pages." : "Addresses that differ only in their query string were treated as one page, so a listing's pagination, sorting and filters were audited once."}
@@ -10013,10 +10086,19 @@ async function render(runDir2, { publicCopy = true } = {}) {
           ${recheckSentence}
         </p>
         ${s.skipped ? `<p>${int(s.skipped)} address${s.skipped === 1 ? " was" : "es were"} found but not audited: ${reasonsText}. A site that shows a bot challenge to a headless browser may not show one to a person; these are kept for a later pass.</p>
-        ${skipped2.length ? disclosure(skipped2.length, "The addresses not audited and the reason for each", `${table([["Address", false], ["Why", false]], skipped2.map((r) => `<tr><th scope="row">${escapeHtml(pathOf(r.url))}</th><td>${escapeHtml(r.reason)}${r.detail ? ` <span class="dim">${escapeHtml(r.detail)}</span>` : ""}</td></tr>`).join(""), { compact: true, label: "Addresses not audited and the reason for each" })}`, "minor") : ""}` : ""}
+        ${skipped2.length ? disclosure(skipped2.length, "The addresses not audited and the reason for each", `${table([["Address", false], ["Why", false]], skipped2.map((r) => `<tr><th scope="row">${escapeHtml(pathOf(r.url))}</th><td>${escapeHtml(r.reason)}${r.detail ? ` <span class="dim">${escapeHtml(r.detail)}</span>` : ""}</td></tr>`).join(""), { compact: true, label: "Addresses not audited and the reason for each" })}`, "minor") : ""}` : ""}`)}
+        ${fold("Limits", `
+        <p>
+          Automation checks part of WCAG. A page with no failures here can still be hard to
+          use; only a person can find the rest. One failing element is one count, so a menu
+          of forty low-contrast links counts forty times. A header on every page counts on every page. Pages behind a login, a search or a form were not reached.
+          The window size matters too: sites show different content at
+          different widths, and these numbers are for this one. And a page is
+          judged on the page it chose to serve: where that was a sign-in form
+          or a redirect stub rather than a home page, a clean result speaks for
+          that form, not the site behind it.
+        </p>`)}
       </section>
-      ${reviewSection(s, "pages", engineShort)}
-      ${limitsSection("A header on every page counts on every page. Pages behind a login, a search or a form were not reached.")}
       ${promoSection()}`;
     } else {
       const top = status.mode === "top";
@@ -10128,9 +10210,11 @@ async function render(runDir2, { publicCopy = true } = {}) {
       footnote: status.mode === "top" ? 'Inspired by <a href="https://webaim.org/projects/million/" rel="external">the WebAIM Million</a>, measured with the pour engine.' : null,
       // The headline figures are exact, one decimal, never rounded to a
       // neater number (David, 2026-08-31).
-      stats: [[`${dec(s.failingPct)}%`, `of the ${what} audited have proven accessibility failures`], [dec(s.meanFailing), `failing elements on the average ${what.slice(0, -1)}`], [int(s.medianFailing), `failing elements on the median ${what.slice(0, -1)}`]],
+      // Every report leads with its unit, pages or sites, never elements
+      // (David, 2026-09-16); the shares and averages live in the sections.
+      stats: [[int(s.failingPages), `of the ${int(s.pages)} ${what} fail`], [int(s.worst?.find((x) => x.impact === "critical")?.pages ?? 0), `${what} have a critical failure`], [int(s.clean), `${s.clean === 1 ? what.slice(0, -1) : what} with nothing proved wrong`]],
       viz: severityViz(s, what),
-      body: `${commonSections(s, what, engineShort)}${extraSections}`,
+      body: isSite2 ? extraSections : `${commonSections(s, what, engineShort)}${extraSections}`,
       share
     });
     return html;
@@ -10516,9 +10600,11 @@ if (isSite) {
     recheckTotal = queue.length;
   } else {
     for (const row of done.values()) seen.add(row.url);
-    for (const row of done.values()) for (const link of row.links ?? []) if (!seen.has(link)) {
-      seen.add(link);
-      queue.push({ url: link, depth: (row.depth ?? 0) + 1, from: row.url });
+    if (!renderOnly) {
+      for (const row of done.values()) for (const link of row.links ?? []) if (!seen.has(link)) {
+        seen.add(link);
+        queue.push({ url: link, depth: (row.depth ?? 0) + 1, from: row.url });
+      }
     }
     if (!done.size) {
       const first = normalise(startUrl.toString(), startUrl) ?? startUrl.toString();
@@ -10918,8 +11004,8 @@ function writeStatus(extra = {}, force = false) {
     skipped,
     tagged: tally.tagged,
     finished: done.size,
-    discovered: isSite ? seen.size : null,
-    queued: isSite ? queue.length : null,
+    discovered: isSite ? renderOnly ? prior?.discovered ?? seen.size : seen.size : null,
+    queued: isSite ? renderOnly ? prior?.queued ?? 0 : queue.length : null,
     cursorRank: list ? list[Math.min(cursor, list.length - 1)]?.rank ?? null : null,
     recheck,
     recheckTotal,
