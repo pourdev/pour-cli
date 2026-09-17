@@ -1345,6 +1345,8 @@ function contrastRatio(foreground, background) {
   const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
   return (lighter + 0.05) / (darker + 0.05);
 }
+var channelText = (value) => String(Math.round(value * 100) / 100);
+var asRgb = (color) => `rgb(${channelText(color.r)}, ${channelText(color.g)}, ${channelText(color.b)})`;
 function showRatio(ratio) {
   const text = ratio >= 10 ? (Math.floor(ratio * 10) / 10).toFixed(1) : (Math.floor(ratio * 100) / 100).toFixed(2);
   return text.replace(/\.0+$/, "");
@@ -2349,8 +2351,6 @@ function isLargeText(style) {
 var firstLayerUrl = (css) => splitBackgroundLayers(css ?? "").map(backgroundLayerUrl).find(Boolean) ?? null;
 var extentOf = (rect) => rect ? { width: rect.right - rect.left, height: rect.bottom - rect.top } : null;
 var SEPARATOR_GLYPHS = /^([|¦·•∙‧/⁄\\‐‑‒–—―⁃«»‹›-])\1*$/;
-var channelText = (value) => String(Math.round(value * 100) / 100);
-var asRgb = (color) => `rgb(${channelText(color.r)}, ${channelText(color.g)}, ${channelText(color.b)})`;
 var veiledIncomplete = (resting, veiled) => ({
   status: "incomplete",
   message: "This text sits behind a translucent full-page overlay (a modal or loading veil), which changes its presented contrast" + (resting && veiled ? `: ${showRatio(resting)}:1 at rest, ${showRatio(veiled)}:1 as presented through the overlay, which straddles the threshold` : "") + " \u2014 judge the page with the overlay dismissed, or the dimmed state by eye if the overlay is permanent."
@@ -4480,33 +4480,66 @@ var aria_attr_valid_default = {
 
 // src/engine/rules/wcag/4.1.2-aria-allowed-attr.js
 var HANDLED_ELSEWHERE = /* @__PURE__ */ new Set(["label", "labelledby"]);
+var NATIVE_STATE = { readonly: "readonly", required: "required", disabled: "disabled", checked: "checked" };
+function unsupportedAria(element) {
+  const ariaAttrs = [];
+  for (const { name } of attributesOf(element)) {
+    if (!name.startsWith("aria-")) continue;
+    const attr = name.slice(5);
+    if (!HANDLED_ELSEWHERE.has(attr) && KNOWN_ARIA.has(attr)) ariaAttrs.push(attr);
+  }
+  if (!ariaAttrs.length) return null;
+  const role = effectiveRole(element);
+  const allowed = role && ROLE_ARIA[role];
+  if (!allowed) return null;
+  const names = ariaAttrs.filter((name) => !GLOBAL_ARIA.has(name) && !allowed.includes(name));
+  return names.length ? { role, names } : null;
+}
 var aria_allowed_attr_default = {
   id: "aria-allowed-attr",
   name: "Allowed ARIA attributes",
-  impact: "moderate",
+  impact: "minor",
   tags: ["wcag2a", "wcag412"],
   help: "ARIA attributes must be supported by the element\u2019s role",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
   selector: "*",
   visibleOnly: false,
   evaluate(element) {
-    const ariaAttrs = [];
-    for (const { name } of attributesOf(element)) {
-      if (!name.startsWith("aria-")) continue;
-      const attr = name.slice(5);
-      if (!HANDLED_ELSEWHERE.has(attr) && KNOWN_ARIA.has(attr)) ariaAttrs.push(attr);
-    }
-    if (!ariaAttrs.length) return { status: "pass" };
-    const role = effectiveRole(element);
-    const allowed = role && ROLE_ARIA[role];
-    if (!allowed) return { status: "pass" };
-    const disallowed = ariaAttrs.filter((name) => !GLOBAL_ARIA.has(name) && !allowed.includes(name));
+    const found = unsupportedAria(element);
+    if (!found) return { status: "pass" };
+    const disallowed = found.names.filter((name) => !(NATIVE_STATE[name] && element.hasAttribute(NATIVE_STATE[name])));
     if (!disallowed.length) return { status: "pass" };
+    const role = found.role;
     const names = disallowed.map((n) => `aria-${n}`);
     return {
-      status: "incomplete",
-      message: `${names.join(", ")} is not supported on role "${role}", so the browser drops it and assistive technology never sees it. Nothing is announced wrongly, but nothing is announced at all. Does this element really have that state? If it does, it is invisible to a screen reader and this is a 4.1.2 failure. If it does not, the attribute is simply stray and no one is affected. Invalid markup is not by itself a WCAG failure: the criterion that policed validity, 4.1.1 Parsing, was removed in WCAG 2.2 (w3.org/WAI/WCAG22/Understanding/parsing.html), so what decides this is whether the state reaches users, not the syntax.`,
+      status: "fail",
+      message: `${names.join(", ")} is not supported on role "${role}" (ARIA 1.2 \xA78.6), so user agents drop it and assistive technology never sees it. Nothing is announced wrongly, but nothing is announced at all. If the element really has that state, it is invisible to a screen reader; if it does not, the attribute is stray and no one is affected, but ARIA 1.2 still says authors MUST NOT write it.`,
       fix: `Move ${names.join("/")} to the element whose role supports it, usually the control that toggles this one, or remove it if the element has no such state. Adding a role to this element to make the attribute legal is rarely right: the host language restricts which roles each element may take.`
+    };
+  }
+};
+
+// src/engine/rules/wcag/4.1.2-aria-state-unreachable.js
+var aria_state_unreachable_default = {
+  id: "aria-state-unreachable",
+  name: "ARIA state the element really has cannot be reached",
+  impact: "moderate",
+  tags: ["wcag2a", "wcag412"],
+  help: "A state the element has must be exposed through a role that supports it",
+  helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
+  selector: "[aria-readonly], [aria-required], [aria-disabled], [aria-checked]",
+  visibleOnly: false,
+  evaluate(element) {
+    const found = unsupportedAria(element);
+    if (!found) return { status: "pass" };
+    const proven = found.names.filter((name) => NATIVE_STATE[name] && element.hasAttribute(NATIVE_STATE[name]));
+    if (!proven.length) return { status: "pass" };
+    const states = proven.map((name) => `aria-${name}`);
+    const natives = proven.map((name) => NATIVE_STATE[name]);
+    return {
+      status: "fail",
+      message: `This element really is ${natives.join(" and ")}: its native ${natives.join(" and ")} attribute says so. But ${states.join(" and ")} is not supported on role "${found.role}" (ARIA 1.2 \xA78.6), so user agents drop it and assistive technology cannot learn the state. The control works, and nobody using a screen reader is told how.`,
+      fix: `Give the element a role that supports ${states.join(" and ")}, which for a form control is usually its own native role with no role attribute at all, or move the state to the element that carries the control's role. Do not add a role the host language forbids on this element to make the attribute legal.`
     };
   }
 };
@@ -5645,7 +5678,7 @@ var control_contrast_default = {
         }
         if (group) {
           const ratio2 = contrastRatio(group.foreground, group.background);
-          return ratio2 >= required ? null : { what, ratio: ratio2 };
+          return ratio2 >= required ? null : { what, ratio: ratio2, fg: group.foreground, bg: group.background };
         }
       }
       const painted = opacity * ownOpacity;
@@ -5653,7 +5686,7 @@ var control_contrast_default = {
       const fg = faded.a < 1 ? composite(faded, background) : faded;
       const ratio = contrastRatio(fg, background);
       if (ratio >= required) return null;
-      return { what, ratio };
+      return { what, ratio, fg, bg: background };
     };
     const failures = [];
     const valueVerdict = judge(style.webkitTextFillColor || style.color, "value text");
@@ -5679,8 +5712,11 @@ var control_contrast_default = {
     return {
       status: "fail",
       message: `This field's ${worst.what} has ${showRatio(worst.ratio)}:1 contrast against the field background \u2014 below the ${required}:1 minimum.`,
-      fix: `Darken the ${worst.what.includes("placeholder") ? "placeholder colour (::placeholder)" : "text colour"} until it reaches ${required}:1 against the field background.`,
-      data: { ratio: Number(showRatio(worst.ratio)), required }
+      fix: `Darken the ${worst.what.includes("placeholder") ? "placeholder colour (::placeholder)" : "text colour"} until it reaches ${required}:1 against the field background (currently ${asRgb(worst.fg)} on ${asRgb(worst.bg)}).`,
+      // The judged pair, as the text rule reports it, so the UIs can link
+      // out to the checker with it (the link was missing on this rule's
+      // findings until 2026-09-17: it carried the ratio and nothing else).
+      data: { foreground: asRgb(worst.fg), background: asRgb(worst.bg), ratio: Number(showRatio(worst.ratio)), required }
     };
   }
 };
@@ -7769,6 +7805,7 @@ var rules_default = [
   media_captions_default,
   aria_attr_valid_default,
   aria_allowed_attr_default,
+  aria_state_unreachable_default,
   aria_field_name_default,
   aria_label_misuse_default,
   role_required_aria_default,
