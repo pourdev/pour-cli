@@ -277,7 +277,7 @@ export async function runAudit(page, engineSource, { tags = WCAG_TAGS, exclude, 
 /** A vision or sensory simulation applied to the page, settled. A PNG is
  *  a still, so the page is told the reader prefers reduced motion first:
  *  the simulations that move (the aura, which takes half a minute to reach
- *  its size; the floaters) then draw their settled frame at once, and the
+ *  its size) then draw their settled frame at once, and the
  *  page's own animations hold still for the shot. */
 export async function applyFilter(page, filtersSource, name, isSensory) {
   await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);

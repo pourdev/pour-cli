@@ -279,8 +279,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.129",
-  // Release: engine 1.43.0; the cataract veil, one colour row per colour with a severity picker, the flicker row gone, the age slider's contrast on fine text only; the bookmarklet panel above every highlight and its settings menu visible when minimized.
+  version: "1.2.130",
+  // Release: every prevalence figure re-checked against its source (glaucoma ~3% over 40, macular degeneration ~9% over 45, Uncorrected Focus ~5-6% uncorrected, Resting Tremor ~0.2%, the dyslexia figure reworded and off Contrast Sensitivity); Drifting Shadows (floaters) removed; pour-cli 0.3.21. Engine unchanged at 1.43.0. Was 1.2.129.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
