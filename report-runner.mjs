@@ -279,13 +279,13 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.132",
-  // Release: engine 1.44.1. Text on a solid card that paint order proves lies over decorative, unclickable media is judged on the card's colour where it had gone to review; an invalid lang is judged on an aria-hidden element whose text is still seen, and on one that is visibility:hidden with a visible descendant, and not where aria-hidden text is also out of sight. pour-cli 0.3.23, editor 0.2.27. Was 1.2.131.
+  version: "1.2.133",
+  // Release: engine 1.44.2. The page language rule passes a document that holds no words, so a placeholder about:blank frame is no longer reported for a language it has nothing in, and the fix line for an unsupported ARIA attribute names the repair for that attribute. pour-cli 0.3.24, editor 0.2.28. Was 1.2.132.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
-    version: "1.44.1"
-    // Contrast proves from CSS paint order when an opaque stacking-context ancestor of the text lies over hit-test-blind media, and judges the text on it; valid-lang-parts takes every lang element and rules on visibility itself, counting aria-hidden words only where they are on screen. Was 1.44.0.
+    version: "1.44.2"
+    // html-lang passes a wordless document (no title text, no body text, no body element beyond scripts and metadata); aria-allowed-attr's fix line names the repair per attribute. Was 1.44.1.
   },
   extension: {
     // Appended to productName for the manifest name, which IS the store
@@ -327,7 +327,7 @@ var project_config_default = {
     // stamp under reports/benchmark/ (data-<stamp>.json). Every figure in
     // the copy is derived from that file at build time (scripts/lib/facts.js),
     // so quoting a new run is one line here, never a hunt through prose.
-    published: "2026-09-12-1701"
+    published: "2026-09-21-1400"
   }
 };
 
@@ -478,6 +478,17 @@ var document_title_default = {
 
 // src/engine/rules/wcag/3.1.1-html-lang.js
 var LANG_PATTERN = /^([a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*|[xXiI](-[a-zA-Z0-9]{1,8})+)$/;
+var WORDLESS = "script, style, template, link, meta, base";
+function blankDocument(element) {
+  const doc = element.ownerDocument;
+  if (doc.title?.trim()) return false;
+  const body = doc.body;
+  if (!body) return true;
+  return [...body.childNodes].every((node) => {
+    if (node.nodeType === 3) return !node.data.trim();
+    return node.nodeType !== 1 || node.matches(WORDLESS);
+  });
+}
 var html_lang_default = {
   id: "html-lang",
   name: "Page language",
@@ -488,6 +499,7 @@ var html_lang_default = {
   selector: "html",
   visibleOnly: false,
   evaluate(element) {
+    if (blankDocument(element)) return { status: "pass" };
     const lang = element.getAttribute("lang")?.trim();
     if (!element.hasAttribute("lang")) {
       return {
@@ -5071,6 +5083,12 @@ var aria_attr_valid_default = {
 // src/engine/rules/wcag/4.1.2-aria-allowed-attr.js
 var HANDLED_ELSEWHERE = /* @__PURE__ */ new Set(["label", "labelledby"]);
 var NATIVE_STATE = { readonly: "readonly", required: "required", disabled: "disabled", checked: "checked" };
+var HINT = {
+  selected: (role) => role === "cell" ? 'A table whose cells can be selected is a grid: aria-selected needs role="grid" on the table, which makes its cells gridcells.' : `aria-selected belongs to option, tab, row and gridcell. To mark the current item in a set of ${role === "link" ? "links" : "items"}, such as the current page, language or step, use aria-current, which is global and allowed on this role.`,
+  expanded: (role) => role === "textbox" || role === "searchbox" ? 'A text field that opens a list of suggestions is a combobox: aria-expanded needs role="combobox", which ARIA in HTML allows on a text input, with aria-controls pointing at the list.' : "aria-expanded belongs on the control that opens and closes the content, a button in most cases, and not on the content or its container. Put it on that control; if this element is itself what the user presses, it should be a button.",
+  checked: (role) => role === "button" ? "A button that stays on or off takes aria-pressed, not aria-checked." : "aria-checked belongs to checkbox, radio, switch, option and the checkable menu items. For something the user ticks, use a native checkbox or radio input.",
+  pressed: () => "aria-pressed belongs to button alone. If this element switches something on and off, make it a button element."
+};
 function unsupportedAria(element) {
   const ariaAttrs = [];
   for (const { name } of attributesOf(element)) {
@@ -5084,6 +5102,12 @@ function unsupportedAria(element) {
   if (!allowed) return null;
   const names = ariaAttrs.filter((name) => !GLOBAL_ARIA.has(name) && !allowed.includes(name));
   return names.length ? { role, names } : null;
+}
+function repair(attrs, role) {
+  const hinted = attrs.filter((name) => HINT[name]).map((name) => HINT[name](role));
+  const rest = attrs.filter((name) => !HINT[name]).map((name) => `aria-${name}`);
+  if (rest.length) hinted.push(`Move ${rest.join("/")} to the element whose role supports it.`);
+  return hinted.join(" ");
 }
 var aria_allowed_attr_default = {
   id: "aria-allowed-attr",
@@ -5104,7 +5128,7 @@ var aria_allowed_attr_default = {
     return {
       status: "fail",
       message: `${names.join(", ")} is not supported on role "${role}" (ARIA 1.2 \xA78.6), so user agents drop it and assistive technology never sees it. Nothing is announced wrongly, but nothing is announced at all. If the element really has that state, it is invisible to a screen reader; if it does not, the attribute is stray and no one is affected, but ARIA 1.2 still says authors MUST NOT write it.`,
-      fix: `Move ${names.join("/")} to the element whose role supports it, usually the control that toggles this one, or remove it if the element has no such state. Adding a role to this element to make the attribute legal is rarely right: the host language restricts which roles each element may take.`
+      fix: `${repair(disallowed, role)} If the element has no such state, remove the attribute. Adding a role to this element to make the attribute legal is rarely right: the host language restricts which roles each element may take.`
     };
   }
 };

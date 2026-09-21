@@ -152,6 +152,17 @@ var document_title_default = {
 
 // src/engine/rules/wcag/3.1.1-html-lang.js
 var LANG_PATTERN = /^([a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*|[xXiI](-[a-zA-Z0-9]{1,8})+)$/;
+var WORDLESS = "script, style, template, link, meta, base";
+function blankDocument(element) {
+  const doc = element.ownerDocument;
+  if (doc.title?.trim()) return false;
+  const body = doc.body;
+  if (!body) return true;
+  return [...body.childNodes].every((node) => {
+    if (node.nodeType === 3) return !node.data.trim();
+    return node.nodeType !== 1 || node.matches(WORDLESS);
+  });
+}
 var html_lang_default = {
   id: "html-lang",
   name: "Page language",
@@ -162,6 +173,7 @@ var html_lang_default = {
   selector: "html",
   visibleOnly: false,
   evaluate(element) {
+    if (blankDocument(element)) return { status: "pass" };
     const lang = element.getAttribute("lang")?.trim();
     if (!element.hasAttribute("lang")) {
       return {
@@ -4745,6 +4757,12 @@ var aria_attr_valid_default = {
 // src/engine/rules/wcag/4.1.2-aria-allowed-attr.js
 var HANDLED_ELSEWHERE = /* @__PURE__ */ new Set(["label", "labelledby"]);
 var NATIVE_STATE = { readonly: "readonly", required: "required", disabled: "disabled", checked: "checked" };
+var HINT = {
+  selected: (role) => role === "cell" ? 'A table whose cells can be selected is a grid: aria-selected needs role="grid" on the table, which makes its cells gridcells.' : `aria-selected belongs to option, tab, row and gridcell. To mark the current item in a set of ${role === "link" ? "links" : "items"}, such as the current page, language or step, use aria-current, which is global and allowed on this role.`,
+  expanded: (role) => role === "textbox" || role === "searchbox" ? 'A text field that opens a list of suggestions is a combobox: aria-expanded needs role="combobox", which ARIA in HTML allows on a text input, with aria-controls pointing at the list.' : "aria-expanded belongs on the control that opens and closes the content, a button in most cases, and not on the content or its container. Put it on that control; if this element is itself what the user presses, it should be a button.",
+  checked: (role) => role === "button" ? "A button that stays on or off takes aria-pressed, not aria-checked." : "aria-checked belongs to checkbox, radio, switch, option and the checkable menu items. For something the user ticks, use a native checkbox or radio input.",
+  pressed: () => "aria-pressed belongs to button alone. If this element switches something on and off, make it a button element."
+};
 function unsupportedAria(element) {
   const ariaAttrs = [];
   for (const { name } of attributesOf(element)) {
@@ -4758,6 +4776,12 @@ function unsupportedAria(element) {
   if (!allowed) return null;
   const names = ariaAttrs.filter((name) => !GLOBAL_ARIA.has(name) && !allowed.includes(name));
   return names.length ? { role, names } : null;
+}
+function repair(attrs, role) {
+  const hinted = attrs.filter((name) => HINT[name]).map((name) => HINT[name](role));
+  const rest = attrs.filter((name) => !HINT[name]).map((name) => `aria-${name}`);
+  if (rest.length) hinted.push(`Move ${rest.join("/")} to the element whose role supports it.`);
+  return hinted.join(" ");
 }
 var aria_allowed_attr_default = {
   id: "aria-allowed-attr",
@@ -4778,7 +4802,7 @@ var aria_allowed_attr_default = {
     return {
       status: "fail",
       message: `${names.join(", ")} is not supported on role "${role}" (ARIA 1.2 \xA78.6), so user agents drop it and assistive technology never sees it. Nothing is announced wrongly, but nothing is announced at all. If the element really has that state, it is invisible to a screen reader; if it does not, the attribute is stray and no one is affected, but ARIA 1.2 still says authors MUST NOT write it.`,
-      fix: `Move ${names.join("/")} to the element whose role supports it, usually the control that toggles this one, or remove it if the element has no such state. Adding a role to this element to make the attribute legal is rarely right: the host language restricts which roles each element may take.`
+      fix: `${repair(disallowed, role)} If the element has no such state, remove the attribute. Adding a role to this element to make the attribute legal is rarely right: the host language restricts which roles each element may take.`
     };
   }
 };
