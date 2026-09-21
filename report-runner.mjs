@@ -279,13 +279,13 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.131",
-  // Release: engine 1.44.0. An invalid lang on a page part fails only through words that inherit it; the label of a switched-off control is exempt from contrast with it; a lone icon glyph in a named control, an icon-font glyph and colour emoji go to review where a script cannot say which criterion applies (under 3:1 on the face of a control still fails); a pseudo-element cut to a shape by a mask or clip-path is no longer taken as the text's backdrop. pour-cli 0.3.22, editor 0.2.26. Was 1.2.130.
+  version: "1.2.132",
+  // Release: engine 1.44.1. Text on a solid card that paint order proves lies over decorative, unclickable media is judged on the card's colour where it had gone to review; an invalid lang is judged on an aria-hidden element whose text is still seen, and on one that is visibility:hidden with a visible descendant, and not where aria-hidden text is also out of sight. pour-cli 0.3.23, editor 0.2.27. Was 1.2.131.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
-    version: "1.44.0"
-    // valid-lang-parts judges a lang only where words inherit it (name and description included); contrast exempts the label of an inactive control, sends glyphs that are not words to review with a 3:1 floor on the face of a control, and treats a masked or clipped pseudo-element over text as paint of unknown extent. From four pull requests by Jeff Witt and the release gate. Was 1.43.0.
+    version: "1.44.1"
+    // Contrast proves from CSS paint order when an opaque stacking-context ancestor of the text lies over hit-test-blind media, and judges the text on it; valid-lang-parts takes every lang element and rules on visibility itself, counting aria-hidden words only where they are on screen. Was 1.44.0.
   },
   extension: {
     // Appended to productName for the manifest name, which IS the store
@@ -348,17 +348,17 @@ function flatTreeParent(node) {
 }
 function flatDescendants(element) {
   const found = [];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   const visit = (scope2) => {
     for (const el of scope2.querySelectorAll("*")) {
-      if (seen2.has(el)) continue;
-      seen2.add(el);
+      if (seen3.has(el)) continue;
+      seen3.add(el);
       found.push(el);
       if (el.shadowRoot) visit(el.shadowRoot);
       if (el.tagName === "SLOT") {
         for (const assigned of el.assignedElements({ flatten: true })) {
-          if (!seen2.has(assigned)) {
-            seen2.add(assigned);
+          if (!seen3.has(assigned)) {
+            seen3.add(assigned);
             found.push(assigned);
           }
           visit(assigned);
@@ -514,23 +514,1217 @@ var html_lang_default = {
   }
 };
 
+// src/engine/lib/contrast.js
+var LEGACY_RGB = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+%?)\s*)?\)$/;
+var MODERN_RGB = /^rgba?\(\s*([\d.]+%?)\s+([\d.]+%?)\s+([\d.]+%?)\s*(?:\/\s*([\d.]+%?)\s*)?\)$/;
+var SRGB_COLOR = /^color\(\s*srgb\s+(-?[\d.]+%?)\s+(-?[\d.]+%?)\s+(-?[\d.]+%?)\s*(?:\/\s*([\d.]+%?)\s*)?\)$/;
+var clamp255 = (value) => Math.min(255, Math.max(0, value));
+var channel = (token, unitScale) => clamp255(token.endsWith("%") ? parseFloat(token) / 100 * 255 : parseFloat(token) * unitScale);
+var alphaOf = (token) => {
+  if (token === void 0) return 1;
+  const value = parseFloat(token);
+  return Math.min(1, Math.max(0, token.endsWith("%") ? value / 100 : value));
+};
+function parseKnownSyntax(cssColor) {
+  const rgb = LEGACY_RGB.exec(cssColor) ?? MODERN_RGB.exec(cssColor);
+  if (rgb) return { r: channel(rgb[1], 1), g: channel(rgb[2], 1), b: channel(rgb[3], 1), a: alphaOf(rgb[4]) };
+  const srgb = SRGB_COLOR.exec(cssColor);
+  if (srgb) return { r: channel(srgb[1], 255), g: channel(srgb[2], 255), b: channel(srgb[3], 255), a: alphaOf(srgb[4]) };
+  return null;
+}
+var probe;
+var probeUnavailable = false;
+function paintToSrgb(cssColor) {
+  if (probeUnavailable) return null;
+  try {
+    probe ??= document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+    if (!probe) {
+      probeUnavailable = true;
+      return null;
+    }
+    probe.fillStyle = "#000000";
+    probe.fillStyle = cssColor;
+    const asBlack = probe.fillStyle;
+    probe.fillStyle = "#ffffff";
+    probe.fillStyle = cssColor;
+    if (asBlack === "#000000" && probe.fillStyle === "#ffffff") return null;
+    probe.clearRect(0, 0, 1, 1);
+    probe.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = probe.getImageData(0, 0, 1, 1).data;
+    return { r, g, b, a: a / 255 };
+  } catch {
+    probeUnavailable = true;
+    return null;
+  }
+}
+var colorCache = /* @__PURE__ */ new Map();
+function parseColor(cssColor) {
+  if (cssColor == null) return null;
+  if (colorCache.has(cssColor)) return colorCache.get(cssColor);
+  const color = parseKnownSyntax(cssColor) ?? paintToSrgb(cssColor);
+  if (colorCache.size < 1e4) colorCache.set(cssColor, color);
+  return color;
+}
+function channelLuminance(value) {
+  const c = value / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+function luminance({ r, g, b }) {
+  return 0.2126 * channelLuminance(r) + 0.7152 * channelLuminance(g) + 0.0722 * channelLuminance(b);
+}
+function contrastRatio(foreground, background) {
+  const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+var channelText = (value) => String(Math.round(value * 100) / 100);
+var asRgb = (color) => `rgb(${channelText(color.r)}, ${channelText(color.g)}, ${channelText(color.b)})`;
+function showRatio(ratio) {
+  const text = ratio >= 10 ? (Math.floor(ratio * 10) / 10).toFixed(1) : (Math.floor(ratio * 100) / 100).toFixed(2);
+  return text.replace(/\.0+$/, "");
+}
+function composite(top, bottom) {
+  const a = top.a + bottom.a * (1 - top.a);
+  const blend = (t, b) => (t * top.a + b * bottom.a * (1 - top.a)) / (a || 1);
+  return { r: blend(top.r, bottom.r), g: blend(top.g, bottom.g), b: blend(top.b, bottom.b), a };
+}
+var backgroundCache = /* @__PURE__ */ new WeakMap();
+var opacityCache = /* @__PURE__ */ new WeakMap();
+var opacityAnimatorsCache = null;
+var mediaRectsCache = null;
+var panelRectsCache = null;
+var pseudoCache = /* @__PURE__ */ new WeakMap();
+var zeroClipCache = /* @__PURE__ */ new WeakMap();
+var firstLineRulesCache = /* @__PURE__ */ new WeakMap();
+var chainEffectCache = /* @__PURE__ */ new WeakMap();
+var uncoveredEffectCache = /* @__PURE__ */ new WeakMap();
+var blendBackdropCache = /* @__PURE__ */ new WeakMap();
+var labelReferrersCache = /* @__PURE__ */ new WeakMap();
+var stackingContextCache = /* @__PURE__ */ new WeakMap();
+var HAS_IMAGE = Symbol("background-image in chain");
+function labelReferrers(root, isInactive) {
+  let referrers = labelReferrersCache.get(root);
+  if (!referrers) {
+    referrers = /* @__PURE__ */ new Map();
+    for (const referrer of root.querySelectorAll("[aria-labelledby]")) {
+      const inactive = isInactive(referrer);
+      for (const id of referrer.getAttribute("aria-labelledby").split(/\s+/)) {
+        if (!id) continue;
+        const count2 = referrers.get(id) ?? { inactive: 0, other: 0 };
+        count2[inactive ? "inactive" : "other"] += 1;
+        referrers.set(id, count2);
+      }
+    }
+    labelReferrersCache.set(root, referrers);
+  }
+  return referrers;
+}
+var flatParentOf = (node) => node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host ?? null;
+function colourChangingFilter(filter) {
+  if (!filter || filter === "none") return false;
+  let depth = 0;
+  let name = "";
+  for (const ch of filter) {
+    if (ch === "(") {
+      if (depth === 0 && name && name !== "drop-shadow") return true;
+      depth += 1;
+      name = "";
+    } else if (ch === ")") {
+      depth -= 1;
+    } else if (depth === 0) {
+      name = /[a-z-]/i.test(ch) ? name + ch.toLowerCase() : "";
+    }
+  }
+  return false;
+}
+function chainEffect(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (chainEffectCache.has(node)) return chainEffectCache.get(node);
+  const style = getComputedStyle(node);
+  const own = colourChangingFilter(style.filter) || style.mixBlendMode && style.mixBlendMode !== "normal";
+  const result = Boolean(own || chainEffect(flatParentOf(node)));
+  chainEffectCache.set(node, result);
+  return result;
+}
+function uncoveredEffect(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (uncoveredEffectCache.has(node)) return uncoveredEffectCache.get(node);
+  const style = getComputedStyle(node);
+  let result;
+  if ((parseColor(style.backgroundColor)?.a ?? 0) >= 1) result = false;
+  else if (style.backdropFilter && style.backdropFilter !== "none" || style.filter && style.filter !== "none") result = true;
+  else result = uncoveredEffect(flatParentOf(node));
+  uncoveredEffectCache.set(node, result);
+  return result;
+}
+function hasPaintEffects(element) {
+  if (!element || element.nodeType !== 1) return false;
+  return chainEffect(element) || uncoveredEffect(element);
+}
+function isolatedBlendBackdrop(element) {
+  if (!element || element.nodeType !== 1) return false;
+  if (blendBackdropCache.has(element)) return blendBackdropCache.get(element);
+  const style = getComputedStyle(element);
+  const background = parseColor(style.backgroundColor);
+  let result = false;
+  if (!background || background.a < 1) {
+    const isolated = style.isolation === "isolate" || ["fixed", "sticky"].includes(style.position) || style.zIndex !== "auto" || ["transform", "perspective", "filter", "backdropFilter", "clipPath", "maskImage", "webkitMaskImage"].some((key) => style[key] && style[key] !== "none") || /(?:paint|layout|strict|content)/.test(style.contain) || style.willChange && style.willChange !== "auto" || parseFloat(style.opacity) < 1;
+    result = isolated || isolatedBlendBackdrop(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host);
+  }
+  blendBackdropCache.set(element, result);
+  return result;
+}
+function inZeroClipSubtree(element) {
+  for (let a = element; a; a = a.parentElement) {
+    let hidden = zeroClipCache.get(a);
+    if (hidden === void 0) {
+      const s = getComputedStyle(a);
+      hidden = false;
+      if (s.clip !== "auto" && s.position !== "static") {
+        const m = /rect\(([^)]+)\)/.exec(s.clip);
+        if (m) {
+          const parts = m[1].split(",").map((v) => v.trim());
+          if (!parts.includes("auto") && parts.length === 4) {
+            const [t, r, b, l] = parts.map(parseFloat);
+            if (r - l <= 0 || b - t <= 0) hidden = true;
+          }
+        }
+      }
+      if (!hidden && s.clipPath && s.clipPath !== "none") {
+        const m = /inset\(([^)]+)\)/.exec(s.clipPath);
+        if (m && !m[1].includes("px")) {
+          const parts = m[1].trim().split(/\s+/).map(parseFloat);
+          const [t, r = t, b = t, l = r] = parts;
+          if (t + b >= 100 || l + r >= 100) hidden = true;
+        }
+      }
+      zeroClipCache.set(a, hidden);
+    }
+    if (hidden) return true;
+  }
+  return false;
+}
+function backgroundColorSource(element) {
+  for (let node = element; node && node.nodeType === 1; node = node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host) {
+    const style = getComputedStyle(node);
+    if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage)) return null;
+    const color = parseColor(style.backgroundColor);
+    if (!color || color.a === 0) continue;
+    return color.a >= 1 ? style.backgroundColor : null;
+  }
+  return null;
+}
+var transparentImages = /* @__PURE__ */ new Set();
+function paintsNothing(backgroundImage) {
+  if (backgroundImage.includes("gradient(")) return false;
+  const urls = [...backgroundImage.matchAll(/url\(["']?(.*?)["']?\)/g)].map((m) => m[1]);
+  return urls.length > 0 && urls.every((url) => transparentImages.has(url));
+}
+function canvasColor(doc) {
+  const scheme = getComputedStyle(doc.documentElement).colorScheme ?? "";
+  const prefersDark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
+  const useDark = /dark/.test(scheme) && (!/light/.test(scheme) || prefersDark);
+  return useDark ? { r: 18, g: 18, b: 18, a: 1 } : { r: 255, g: 255, b: 255, a: 1 };
+}
+function resolveBackground(element, doc) {
+  if (!element || element.nodeType !== 1) return canvasColor(doc);
+  if (backgroundCache.has(element)) {
+    const cached = backgroundCache.get(element);
+    return cached === HAS_IMAGE ? null : cached;
+  }
+  let result;
+  const style = getComputedStyle(element);
+  if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage)) {
+    result = null;
+  } else {
+    const color = parseColor(style.backgroundColor);
+    if (color && color.a >= 1) {
+      result = color;
+    } else {
+      const behind = resolveBackground(
+        element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host,
+        doc
+      );
+      result = behind === null ? null : color && color.a > 0 ? composite(color, behind) : behind;
+    }
+  }
+  backgroundCache.set(element, result === null ? HAS_IMAGE : result);
+  return result;
+}
+function effectiveBackground(element) {
+  return resolveBackground(element, element.ownerDocument);
+}
+function opacityAnimators(doc) {
+  if (!opacityAnimatorsCache) {
+    opacityAnimatorsCache = /* @__PURE__ */ new WeakMap();
+    for (const animation of typeof doc.getAnimations === "function" ? doc.getAnimations() : []) {
+      if (animation.playState !== "running") continue;
+      const target2 = animation.effect?.target;
+      if (!target2) continue;
+      const keyframes = animation.effect.getKeyframes?.() ?? [];
+      if (!keyframes.some((frame) => frame.opacity !== void 0)) continue;
+      let rest = null;
+      const timing = animation.effect.getComputedTiming?.() ?? {};
+      if (Number.isFinite(timing.endTime) && (timing.fill === "forwards" || timing.fill === "both")) {
+        const last = [...keyframes].reverse().find((frame) => frame.opacity !== void 0);
+        const value = parseFloat(last?.opacity);
+        if (Number.isFinite(value)) rest = value;
+      }
+      const previous = opacityAnimatorsCache.get(target2);
+      if (previous === void 0 || rest !== null && (previous === null || rest < previous)) {
+        opacityAnimatorsCache.set(target2, rest);
+      }
+    }
+  }
+  return opacityAnimatorsCache;
+}
+function opacityAnimating(element) {
+  const animators = opacityAnimators(element.ownerDocument);
+  for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
+    if (animators.has(node)) return true;
+  }
+  return false;
+}
+function restingOpacity(element) {
+  const animators = opacityAnimators(element.ownerDocument);
+  let product = 1;
+  for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
+    if (animators.has(node)) {
+      const rest = animators.get(node);
+      product *= rest === null ? 1 : rest;
+    } else {
+      product *= parseFloat(getComputedStyle(node).opacity) || 0;
+    }
+  }
+  return product;
+}
+function cumulativeOpacity(element) {
+  if (!element || element.nodeType !== 1) return 1;
+  let cached = opacityCache.get(element);
+  if (cached === void 0) {
+    const parent = element.parentElement ?? element.getRootNode()?.host ?? null;
+    cached = (parseFloat(getComputedStyle(element).opacity) || 0) * cumulativeOpacity(parent);
+    opacityCache.set(element, cached);
+  }
+  return cached;
+}
+function nodeRestingOpacity(node) {
+  const animators = opacityAnimators(node.ownerDocument);
+  if (animators.has(node)) {
+    const rest = animators.get(node);
+    return rest === null ? 1 : rest;
+  }
+  const value = parseFloat(getComputedStyle(node).opacity);
+  return Number.isFinite(value) ? value : 1;
+}
+function opacityGroupPaint(element, foreground) {
+  const flatParent = (node) => node.parentElement ?? node.getRootNode()?.host ?? null;
+  let top = null;
+  let opacity = 1;
+  for (let node = element; node && node.nodeType === 1; node = flatParent(node)) {
+    const own = nodeRestingOpacity(node);
+    if (own < 1) {
+      top = node;
+      opacity *= own;
+    }
+  }
+  if (!top) return null;
+  let text = { ...foreground };
+  let paint = { r: 0, g: 0, b: 0, a: 0 };
+  let painted = false;
+  for (let node = element; node && node.nodeType === 1; node = flatParent(node)) {
+    const style = getComputedStyle(node);
+    if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage)) return null;
+    if (style.mixBlendMode && style.mixBlendMode !== "normal" || style.filter && style.filter !== "none" || style.backdropFilter && style.backdropFilter !== "none") return null;
+    const color = parseColor(style.backgroundColor);
+    if (color && color.a > 0) {
+      text = composite(text, color);
+      paint = composite(paint, color);
+      painted = true;
+    }
+    const own = nodeRestingOpacity(node);
+    if (own < 1) {
+      text = { ...text, a: text.a * own };
+      paint = { ...paint, a: paint.a * own };
+    }
+    if (node === top) break;
+  }
+  if (!painted) return null;
+  const behindNode = flatParent(top);
+  const behind = behindNode ? effectiveBackground(behindNode) : canvasColor(element.ownerDocument);
+  if (!behind) return { unresolved: true, opacity };
+  return { foreground: composite(text, behind), background: composite(paint, behind), opacity, text, paint };
+}
+function backgroundObscured(element) {
+  const doc = element.ownerDocument;
+  if (typeof doc.elementsFromPoint !== "function") return null;
+  const own = parseColor(getComputedStyle(element).backgroundColor);
+  if (own && own.a >= 1) return null;
+  const rect = element.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const win = doc.defaultView;
+  const x = Math.min(Math.max(rect.left + rect.width / 2, 0), win.innerWidth - 1);
+  const y = Math.min(Math.max(rect.top + rect.height / 2, 0), win.innerHeight - 1);
+  const stack = doc.elementsFromPoint(x, y);
+  const start = stack.indexOf(element);
+  if (start === -1) return "unverifiable";
+  for (const layer of stack.slice(start + 1)) {
+    if (layer.contains(element)) {
+      const style = getComputedStyle(layer);
+      if (style.backgroundImage !== "none") return layer;
+      const bg = parseColor(style.backgroundColor);
+      if (bg && bg.a >= 1) return null;
+      continue;
+    }
+    return layer;
+  }
+  return null;
+}
+function textSamplePoint(element) {
+  for (const node of element.childNodes) {
+    if (node.nodeType !== 3 || !node.textContent.trim()) continue;
+    const range = element.ownerDocument.createRange();
+    range.selectNodeContents(node);
+    const rect2 = range.getClientRects()[0];
+    if (rect2 && rect2.width && rect2.height) {
+      return { x: rect2.left + rect2.width / 2, y: rect2.top + rect2.height / 2 };
+    }
+  }
+  const rect = element.getBoundingClientRect();
+  return rect.width && rect.height ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+}
+var px = (value) => typeof value === "string" && value.endsWith("px") ? parseFloat(value) : NaN;
+function containingBlockFor(host2) {
+  for (let node = host2; node && node.nodeType === 1; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.position !== "static" || style.transform !== "none" || style.filter !== "none" || /paint|layout|strict|content/.test(style.contain ?? "")) return node;
+  }
+  return null;
+}
+function pseudoRect(host2, style) {
+  const block = containingBlockFor(host2);
+  if (!block) return null;
+  const hostStyle = getComputedStyle(block);
+  const hostRect = block.getBoundingClientRect();
+  const borderLeft = px(hostStyle.borderLeftWidth) || 0;
+  const borderTop = px(hostStyle.borderTopWidth) || 0;
+  const cbLeft = hostRect.left + borderLeft;
+  const cbTop = hostRect.top + borderTop;
+  const cbWidth = hostRect.width - borderLeft - (px(hostStyle.borderRightWidth) || 0);
+  const cbHeight = hostRect.height - borderTop - (px(hostStyle.borderBottomWidth) || 0);
+  const extraX = (px(style.paddingLeft) || 0) + (px(style.paddingRight) || 0) + (px(style.borderLeftWidth) || 0) + (px(style.borderRightWidth) || 0);
+  const extraY = (px(style.paddingTop) || 0) + (px(style.paddingBottom) || 0) + (px(style.borderTopWidth) || 0) + (px(style.borderBottomWidth) || 0);
+  const span = (startValue, endValue, sizeValue, origin, extent, extra) => {
+    const start = px(startValue);
+    const end = px(endValue);
+    const size = px(sizeValue);
+    if (Number.isFinite(start) && Number.isFinite(end)) return [origin + start, origin + extent - end];
+    if (Number.isFinite(start) && Number.isFinite(size)) return [origin + start, origin + start + size + extra];
+    if (Number.isFinite(end) && Number.isFinite(size)) {
+      const far = origin + extent - end;
+      return [far - size - extra, far];
+    }
+    return null;
+  };
+  const x = span(style.left, style.right, style.width, cbLeft, cbWidth, extraX);
+  const y = span(style.top, style.bottom, style.height, cbTop, cbHeight, extraY);
+  if (!x || !y) return null;
+  let [left, right] = x;
+  let [top, bottom] = y;
+  if (style.transform && style.transform !== "none") {
+    const matrix = /^matrix\(([^)]+)\)$/.exec(style.transform);
+    if (!matrix) return null;
+    const [a, b, c, d, e, f] = matrix[1].split(",").map(Number);
+    if (a !== 1 || b !== 0 || c !== 0 || d !== 1) return null;
+    left += e;
+    right += e;
+    top += f;
+    bottom += f;
+  }
+  return { left, top, right, bottom, empty: !(right > left) || !(bottom > top) };
+}
+function pseudoLayers(host2) {
+  let layers = pseudoCache.get(host2);
+  if (layers !== void 0) return layers;
+  layers = [];
+  for (const which of ["::before", "::after"]) {
+    const style = getComputedStyle(host2, which);
+    if (style.content === "none" || style.display === "none" || style.visibility === "hidden") continue;
+    const color = parseColor(style.backgroundColor);
+    const paints = style.backgroundImage !== "none" || (color?.a ?? 0) > 0;
+    if (!paints) continue;
+    if (style.position !== "absolute" && style.position !== "fixed") continue;
+    const opacity = parseFloat(style.opacity);
+    const opacityFactor = Number.isFinite(opacity) ? opacity : 1;
+    const rect = style.position === "absolute" ? pseudoRect(host2, style) : null;
+    if (!rect) {
+      const alphaBound = Math.min(1, opacityFactor * (style.backgroundImage !== "none" ? 1 : color.a));
+      if (alphaBound > 0) layers.push({ film: alphaBound, fixed: style.position === "fixed" });
+      continue;
+    }
+    if (rect.empty) continue;
+    const mask = style.maskImage || style.webkitMaskImage;
+    if (mask && mask !== "none" || style.clipPath && style.clipPath !== "none") {
+      const alphaBound = Math.min(1, opacityFactor * (style.backgroundImage !== "none" ? 1 : color.a));
+      if (alphaBound > 0) layers.push({ rect, shaped: alphaBound });
+      continue;
+    }
+    let layerColor = color;
+    if (layerColor && opacityFactor < 1) layerColor = { ...layerColor, a: layerColor.a * opacityFactor };
+    const imageCss = style.backgroundImage !== "none" ? style.backgroundImage : null;
+    const imageMeta = imageCss ? { repeat: style.backgroundRepeat, size: style.backgroundSize, position: style.backgroundPosition } : null;
+    layers.push({ rect, color: layerColor, imageCss, imageMeta });
+  }
+  pseudoCache.set(host2, layers);
+  return layers;
+}
+function pseudoBackdropForText(element) {
+  const point = textSamplePoint(element);
+  if (!point) return null;
+  let acc = null;
+  let image = null;
+  let settled = false;
+  let film = 0;
+  let shaped = false;
+  let crossed = false;
+  let beyondPaint = false;
+  for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
+    for (const layer of pseudoLayers(node)) {
+      if (layer.film) {
+        if (!layer.fixed && crossed) continue;
+        film = 1 - (1 - film) * (1 - layer.film);
+        continue;
+      }
+      if (settled) continue;
+      const { rect, color, imageCss } = layer;
+      if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) continue;
+      if (layer.shaped) {
+        film = 1 - (1 - film) * (1 - layer.shaped);
+        shaped = true;
+        continue;
+      }
+      if (imageCss) {
+        image = { css: imageCss, element: node, box: rect, meta: layer.imageMeta };
+        settled = true;
+        beyondPaint = beyondPaint || crossed;
+        continue;
+      }
+      if (!color || color.a === 0) continue;
+      acc = acc ? composite(acc, color) : color;
+      beyondPaint = beyondPaint || crossed;
+      if (acc.a >= 1) settled = true;
+    }
+    if (!crossed) {
+      const style = getComputedStyle(node);
+      if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage) || (parseColor(style.backgroundColor)?.a ?? 0) >= 1) crossed = true;
+    }
+  }
+  const filmed = film > 0 && { film, ...shaped && { shaped } };
+  if (image) return { image, ...filmed, ...beyondPaint && { beyondPaint } };
+  if (acc) return { color: acc, ...filmed, ...beyondPaint && { beyondPaint } };
+  return filmed || null;
+}
+function filmedContrastBounds(foreground, background, film) {
+  const ratios = [contrastRatio(foreground, background)];
+  const textLum = luminance(foreground);
+  const sides = [];
+  for (const channel2 of [0, 255]) {
+    const paint = { r: channel2, g: channel2, b: channel2, a: film };
+    const shiftedBackground = composite(paint, background);
+    ratios.push(contrastRatio(foreground, shiftedBackground));
+    ratios.push(contrastRatio(composite(paint, foreground), shiftedBackground));
+    sides.push(Math.sign(textLum - luminance(shiftedBackground)));
+  }
+  return {
+    min: Math.min(...ratios),
+    max: Math.max(...ratios),
+    crossed: sides[0] !== sides[1]
+  };
+}
+function scrimIn(layersAbove, element, win) {
+  const rect = element.getBoundingClientRect();
+  const found = [];
+  for (const layer of layersAbove) {
+    if (layer.contains(element) || element.contains(layer)) continue;
+    const style = getComputedStyle(layer);
+    const color = parseColor(style.backgroundColor);
+    const alpha = (color ? color.a : 0) * (parseFloat(style.opacity) || 1);
+    const hasBackdropFilter = style.backdropFilter && style.backdropFilter !== "none";
+    if (!hasBackdropFilter && (alpha < 0.15 || alpha >= 1)) continue;
+    const r = layer.getBoundingClientRect();
+    const coversViewport = (Math.min(r.right, win.innerWidth) - Math.max(r.left, 0)) * (Math.min(r.bottom, win.innerHeight) - Math.max(r.top, 0)) >= 0.6 * win.innerWidth * win.innerHeight;
+    const coversElement = r.left <= rect.left + 1 && r.top <= rect.top + 1 && r.right >= rect.right - 1 && r.bottom >= rect.bottom - 1;
+    if (coversViewport && coversElement) found.push(layer);
+  }
+  return found.length ? found : null;
+}
+function scrimPaint(layers) {
+  const paints = [];
+  for (const layer of layers) {
+    const style = getComputedStyle(layer);
+    if (style.backdropFilter && style.backdropFilter !== "none") return null;
+    if (style.filter && style.filter !== "none") return null;
+    if (style.mixBlendMode && style.mixBlendMode !== "normal") return null;
+    if (style.backgroundImage !== "none") return null;
+    const color = parseColor(style.backgroundColor);
+    if (!color) return null;
+    const alpha = color.a * (parseFloat(style.opacity) || 1);
+    if (alpha <= 0) continue;
+    paints.push({ ...color, a: alpha });
+  }
+  return paints.length ? paints : null;
+}
+function paintedBackdrop(element) {
+  const doc = element.ownerDocument;
+  const win = doc.defaultView;
+  if (typeof doc.elementsFromPoint !== "function") return "unresolved";
+  const point = textSamplePoint(element);
+  if (!point) return "unresolved";
+  if (point.x < 0 || point.y < 0 || point.x >= win.innerWidth || point.y >= win.innerHeight) {
+    return "offscreen";
+  }
+  const stack = doc.elementsFromPoint(point.x, point.y);
+  const start = stack.indexOf(element);
+  const scrim = start > 0 ? scrimIn(stack.slice(0, start), element, win) : null;
+  let acc = null;
+  const overlays = [];
+  const own = parseColor(getComputedStyle(element).backgroundColor);
+  if (own && own.a > 0) {
+    if (own.a >= 1) return { color: own, scrim };
+    acc = own;
+    overlays.push(own);
+  }
+  if (start === -1) return "unresolved";
+  const missing = [];
+  const inStack = new Set(stack);
+  for (let a = element.parentElement ?? element.getRootNode()?.host; a && a.nodeType === 1; a = a.parentElement ?? a.getRootNode()?.host) {
+    if (inStack.has(a)) continue;
+    const box = a.getBoundingClientRect();
+    if (point.x < box.left || point.x >= box.right || point.y < box.top || point.y >= box.bottom) continue;
+    const st = getComputedStyle(a);
+    const c = parseColor(st.backgroundColor);
+    if (c && c.a > 0 || st.backgroundImage !== "none" && !paintsNothing(st.backgroundImage)) missing.push(a);
+  }
+  const layers = [];
+  for (const layer of stack.slice(start + 1)) {
+    while (missing.length && !missing[0].contains(layer)) layers.push(missing.shift());
+    layers.push(layer);
+  }
+  layers.push(...missing);
+  for (const layer of layers) {
+    if (/^(img|video|canvas|svg|picture|object|embed|iframe)$/i.test(layer.tagName)) {
+      return { image: layer, scrim, overlays };
+    }
+    const style = getComputedStyle(layer);
+    if (layer.shadowRoot) return "unresolved";
+    if (style.mixBlendMode && style.mixBlendMode !== "normal" || style.filter && style.filter !== "none" || style.backdropFilter && style.backdropFilter !== "none") return "unresolved";
+    if (style.backgroundImage !== "none") {
+      const rects = backgroundImagePaintRects(layer);
+      const covers = (r) => !r || point.x >= r.left && point.x < r.right && point.y >= r.top && point.y < r.bottom;
+      if (!rects.length || rects.some(covers)) return { image: layer, scrim, overlays };
+    }
+    let color = parseColor(style.backgroundColor);
+    if (!color) return "unresolved";
+    const layerOpacity = parseFloat(style.opacity);
+    if (layerOpacity < 1) color = { ...color, a: color.a * layerOpacity };
+    if (color.a === 0) continue;
+    acc = acc ? composite(acc, color) : color;
+    if (acc.a >= 1) return { color: acc, scrim };
+    overlays.push(color);
+  }
+  const canvas = canvasColor(doc);
+  return { color: acc ? composite(acc, canvas) : canvas, scrim };
+}
+function opaquePanelRects(doc) {
+  if (!panelRectsCache) {
+    panelRectsCache = { panels: [], veil: null };
+    const win = doc.defaultView;
+    const all = doc.querySelectorAll("body *");
+    if (all.length <= 3e4) {
+      for (const el of all) {
+        const style = getComputedStyle(el);
+        if (style.position === "static" && style.cssFloat === "none") continue;
+        const color = parseColor(style.backgroundColor);
+        const rect = el.getBoundingClientRect();
+        if (color && color.a >= 1 && rect.width >= 24 && rect.height >= 12) {
+          panelRectsCache.panels.push({ element: el, rect, color, hitTestBlind: style.pointerEvents === "none" });
+        }
+        if (!panelRectsCache.veil && (style.position === "fixed" || style.position === "sticky") && style.visibility !== "hidden") {
+          const alpha = (color ? color.a : 0) * (parseFloat(style.opacity) || 1);
+          const hasBackdropFilter = style.backdropFilter && style.backdropFilter !== "none";
+          const coversViewport = rect.width >= 0.9 * win.innerWidth && rect.height >= 0.9 * win.innerHeight;
+          if (coversViewport && (hasBackdropFilter || alpha >= 0.15 && alpha < 1)) {
+            panelRectsCache.veil = el;
+          }
+        }
+      }
+    }
+  }
+  return panelRectsCache.panels;
+}
+function viewportVeil(doc) {
+  opaquePanelRects(doc);
+  return panelRectsCache.veil;
+}
+function parseTextShadows(cssText) {
+  if (!cssText || cssText === "none") return [];
+  const layers = [];
+  for (const part of cssText.split(/,(?![^(]*\))/)) {
+    const colorMatch = /rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}\b/.exec(part);
+    const lengths = [...part.replace(colorMatch?.[0] ?? "", "").matchAll(/(-?\d*\.?\d+)px/g)].map((m) => parseFloat(m[1]));
+    if (lengths.length < 2) continue;
+    layers.push({ x: lengths[0], y: lengths[1], blur: lengths[2] ?? 0, color: parseColor(colorMatch?.[0] ?? "") });
+  }
+  return layers;
+}
+function textShadowHalo(cssText, fontSize) {
+  const cap = Math.max(2, fontSize * 0.25);
+  const byColor = /* @__PURE__ */ new Map();
+  for (const layer of parseTextShadows(cssText)) {
+    if (!layer.color || layer.color.a < 0.95) continue;
+    if (layer.blur > cap || Math.abs(layer.x) > cap || Math.abs(layer.y) > cap) continue;
+    const key = `${Math.round(layer.color.r)},${Math.round(layer.color.g)},${Math.round(layer.color.b)}`;
+    const dirs = byColor.get(key) ?? { color: layer.color, up: false, down: false, left: false, right: false };
+    if (layer.blur >= Math.max(Math.abs(layer.x), Math.abs(layer.y), 0.5)) {
+      dirs.up = dirs.down = dirs.left = dirs.right = true;
+    } else {
+      if (layer.x > 0) dirs.right = true;
+      if (layer.x < 0) dirs.left = true;
+      if (layer.y > 0) dirs.down = true;
+      if (layer.y < 0) dirs.up = true;
+    }
+    byColor.set(key, dirs);
+  }
+  for (const dirs of byColor.values()) {
+    if (dirs.up && dirs.down && dirs.left && dirs.right) return dirs.color;
+  }
+  return null;
+}
+function textShadowNegligible(cssText, fontSize) {
+  return parseTextShadows(cssText).every((l) => !l.color || l.color.a < 0.15 || l.blur > fontSize * 0.5);
+}
+function paintableRect(element, rect) {
+  let { left, top, right, bottom } = rect;
+  let mode2 = getComputedStyle(element).position;
+  for (let a = element.parentElement; a; a = a.parentElement) {
+    if (mode2 === "fixed") break;
+    const s = getComputedStyle(a);
+    const containingBlock = s.position !== "static" || s.transform !== "none" || s.filter && s.filter !== "none";
+    if (mode2 === "absolute" && !containingBlock) continue;
+    const clips = (o) => o === "hidden" || o === "clip";
+    if (clips(s.overflowX) || clips(s.overflowY)) {
+      const b = a.getBoundingClientRect();
+      if (clips(s.overflowX)) {
+        left = Math.max(left, b.left);
+        right = Math.min(right, b.right);
+      }
+      if (clips(s.overflowY)) {
+        top = Math.max(top, b.top);
+        bottom = Math.min(bottom, b.bottom);
+      }
+      if (right <= left || bottom <= top) return null;
+    }
+    mode2 = s.position;
+  }
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+    x: left,
+    y: top
+  };
+}
+function mediaRects(doc) {
+  if (!mediaRectsCache) {
+    mediaRectsCache = [];
+    for (const el of doc.querySelectorAll("img, video, canvas, svg")) {
+      const rect = paintableRect(el, el.getBoundingClientRect());
+      if (rect && rect.width >= 8 && rect.height >= 8) {
+        mediaRectsCache.push({ element: el, rect, hitTestBlind: getComputedStyle(el).pointerEvents === "none" });
+      }
+    }
+  }
+  return mediaRectsCache;
+}
+var CONTEXT_PROPERTIES = [
+  "transform",
+  "translate",
+  "rotate",
+  "scale",
+  "filter",
+  "backdropFilter",
+  "perspective",
+  "clipPath",
+  "maskImage",
+  "webkitMaskImage",
+  "maskBorderSource",
+  "viewTransitionName"
+];
+var WILL_CHANGE_CONTEXTS = /(^|,\s*)(transform|translate|rotate|scale|opacity|filter|backdrop-filter|perspective|clip-path|mask|mask-image|mask-border|isolation|mix-blend-mode|z-index|contain|view-transition-name)\s*(,|$)/;
+function createsStackingContext(element) {
+  let known = stackingContextCache.get(element);
+  if (known !== void 0) return known;
+  const parent = element.parentElement;
+  const style = getComputedStyle(element);
+  known = !parent || style.position === "fixed" || style.position === "sticky" || style.zIndex !== "auto" && (style.position !== "static" || /flex|grid/.test(getComputedStyle(parent).display)) || parseFloat(style.opacity) < 1 || CONTEXT_PROPERTIES.some((name) => style[name] && style[name] !== "none") || style.mixBlendMode && style.mixBlendMode !== "normal" || style.isolation === "isolate" || /layout|paint|strict|content/.test(style.contain ?? "") || style.containerType && style.containerType !== "normal" || style.contentVisibility && style.contentVisibility !== "visible" || WILL_CHANGE_CONTEXTS.test(style.willChange ?? "");
+  stackingContextCache.set(element, known);
+  return known;
+}
+function inTopLayer(element) {
+  for (const selector of [":modal", ":popover-open", ":fullscreen"]) {
+    try {
+      if (element.closest(selector)) return true;
+    } catch {
+    }
+  }
+  return false;
+}
+function paintRank(element, root) {
+  let context = null;
+  let positioned = null;
+  let node = element;
+  for (; node && node !== root; node = node.parentElement) {
+    if (createsStackingContext(node)) context = node;
+    else if (!positioned && getComputedStyle(node).position !== "static") positioned = node;
+  }
+  if (node !== root) return null;
+  if (context) {
+    const style = getComputedStyle(context);
+    const applies = style.zIndex !== "auto" && (style.position !== "static" || /flex|grid/.test(getComputedStyle(context.parentElement ?? context).display));
+    const z = applies ? parseInt(style.zIndex, 10) || 0 : 0;
+    return { node: context, layer: z < 0 ? 0 : z > 0 ? 3 : 2, z };
+  }
+  return positioned ? { node: positioned, layer: 2, z: 0 } : { node: null, layer: 1, z: 0 };
+}
+function insideRoundedBox(box, outer, style) {
+  if (box.left < outer.left || box.right > outer.right || box.top < outer.top || box.bottom > outer.bottom) return false;
+  const radius = (css, width) => {
+    const first = (css ?? "").split(" ")[0];
+    const value = parseFloat(first);
+    if (!Number.isFinite(value)) return null;
+    return first.endsWith("%") ? value / 100 * width : value;
+  };
+  const corners = [
+    [style.borderTopLeftRadius, box.left - outer.left, box.top - outer.top],
+    [style.borderTopRightRadius, outer.right - box.right, box.top - outer.top],
+    [style.borderBottomLeftRadius, box.left - outer.left, outer.bottom - box.bottom],
+    [style.borderBottomRightRadius, outer.right - box.right, outer.bottom - box.bottom]
+  ];
+  for (const [css, dx, dy] of corners) {
+    const r = radius(css, outer.width);
+    if (r === null) return false;
+    if (dx < r && dy < r && (r - dx) ** 2 + (r - dy) ** 2 > r ** 2) return false;
+  }
+  return true;
+}
+function beneathOpaqueAncestor(element, media) {
+  if (inTopLayer(element) || inTopLayer(media)) return false;
+  const box = element.getBoundingClientRect();
+  for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+    if (ancestor.contains(media)) return false;
+    if (!createsStackingContext(ancestor)) continue;
+    const style = getComputedStyle(ancestor);
+    const color = parseColor(style.backgroundColor);
+    if (!color || color.a < 1) continue;
+    if (cumulativeOpacity(ancestor) < 1) continue;
+    if (style.mixBlendMode !== "normal") continue;
+    if (style.clipPath && style.clipPath !== "none" || [style.maskImage, style.webkitMaskImage].some((mask) => mask && mask !== "none")) continue;
+    if (!/^(border-box|padding-box)$/.test(style.backgroundClip)) continue;
+    if (!insideRoundedBox(box, ancestor.getBoundingClientRect(), style)) continue;
+    let shared = ancestor.parentElement;
+    while (shared && !(createsStackingContext(shared) && shared.contains(media))) shared = shared.parentElement;
+    if (!shared) return false;
+    const over = paintRank(ancestor, shared);
+    const under = paintRank(media, shared);
+    if (!over || !under || !over.node || over.node === under.node) return false;
+    if (under.layer !== over.layer) return under.layer < over.layer;
+    if (under.layer === 1) return false;
+    if (under.z !== over.z) return under.z < over.z;
+    return Boolean(
+      under.node.compareDocumentPosition(over.node) & 4
+      /* FOLLOWING */
+    ) && !under.node.contains(over.node);
+  }
+  return false;
+}
+function backgroundImageSource(element) {
+  const overlays = [];
+  for (let current = element; current; current = current.parentElement) {
+    const style = getComputedStyle(current);
+    if (style.backgroundImage !== "none") return { css: style.backgroundImage, element: current, overlays };
+    const color = parseColor(style.backgroundColor);
+    if (color && color.a >= 1) return null;
+    if (color && color.a > 0) overlays.push(color);
+  }
+  return null;
+}
+function applyOverlays(base, overlays) {
+  let result = base;
+  for (let i = overlays.length - 1; i >= 0; i--) result = composite(overlays[i], result);
+  return result;
+}
+var overlayKey = (overlays) => overlays.map((c) => `${c.r},${c.g},${c.b},${c.a}`).join(";");
+var imageRangeCache = /* @__PURE__ */ new Map();
+var MAX_SAMPLE_AXIS = 1024;
+function sampleGridFor(extent) {
+  if (!extent || !(extent.width > 0) || !(extent.height > 0)) return null;
+  const axis = (value) => Math.min(MAX_SAMPLE_AXIS, Math.max(32, Math.ceil(value / 4)));
+  const width = axis(extent.width);
+  const height = axis(extent.height);
+  return { width, height, reduced: extent.width / width > 4.5 || extent.height / height > 4.5 };
+}
+function imageLuminanceRange(url, overlays = [], grid = null, under = null) {
+  const width = grid?.width ?? 32;
+  const height = grid?.height ?? 32;
+  const sizeKey = width === 32 && height === 32 ? "" : `|${width}x${height}`;
+  const backdrop = under?.a >= 1 ? under : null;
+  const cacheKey = `${url}${overlays.length ? `|${overlayKey(overlays)}` : ""}${sizeKey}${backdrop ? `|under:${overlayKey([backdrop])}` : ""}`;
+  if (imageRangeCache.has(cacheKey)) return imageRangeCache.get(cacheKey);
+  const promise = new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    const timer = setTimeout(() => resolve(null), 1500);
+    img.onload = () => {
+      clearTimeout(timer);
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, width, height);
+        const data = ctx.getImageData(0, 0, width, height).data;
+        let min = Infinity;
+        let max2 = -Infinity;
+        let minColor = null;
+        let maxColor = null;
+        let opaquePixels = 0;
+        let alphaSeen = false;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] < 255 && !backdrop) alphaSeen = true;
+          if (data[i + 3] > 0) opaquePixels += 1;
+          if (data[i + 3] === 0 && !backdrop) continue;
+          const pixel = { r: data[i], g: data[i + 1], b: data[i + 2], a: data[i + 3] / 255 };
+          const painted = backdrop ? composite(pixel, backdrop) : { ...pixel, a: 1 };
+          const shown = overlays.length ? applyOverlays(painted, overlays) : painted;
+          const l = luminance(shown);
+          if (l < min) {
+            min = l;
+            minColor = shown;
+          }
+          if (l > max2) {
+            max2 = l;
+            maxColor = shown;
+          }
+        }
+        if (!opaquePixels) {
+          transparentImages.add(url);
+          backgroundCache = /* @__PURE__ */ new WeakMap();
+          resolve({ transparent: true, width: img.naturalWidth, height: img.naturalHeight });
+          return;
+        }
+        const reduced = Boolean(grid?.reduced) && (img.naturalWidth > width || img.naturalHeight > height);
+        resolve(min <= max2 ? { min, max: max2, minColor, maxColor, hasAlpha: alphaSeen, width: img.naturalWidth, height: img.naturalHeight, reduced } : null);
+      } catch {
+        resolve(null);
+      }
+    };
+    img.onerror = () => {
+      clearTimeout(timer);
+      resolve(null);
+    };
+    img.src = url;
+  });
+  imageRangeCache.set(cacheKey, promise);
+  return promise;
+}
+function backgroundImagePaintRects(element) {
+  const style = getComputedStyle(element);
+  const images = splitLayers(style.backgroundImage);
+  if (!images.length) return [];
+  const box = element.getBoundingClientRect();
+  const sizes = splitLayers(style.backgroundSize);
+  const positions = splitLayers(style.backgroundPosition);
+  const repeats = splitLayers(style.backgroundRepeat);
+  const per = (list2, i) => list2.length ? list2[i % list2.length] : void 0;
+  return images.map((image, i) => {
+    if (image === "none") return { left: 0, top: 0, right: 0, bottom: 0 };
+    const repeat = per(repeats, i) ?? "repeat";
+    if (repeat !== "no-repeat") return null;
+    const size = per(sizes, i) ?? "auto";
+    if (size === "cover" || size === "contain") return null;
+    const parts = splitParts(size);
+    const extent = (value, total) => {
+      if (value?.endsWith("px")) return parseFloat(value);
+      if (value?.endsWith("%")) return parseFloat(value) / 100 * total;
+      return null;
+    };
+    const width = extent(parts[0], box.width);
+    const height = extent(parts[1] ?? parts[0], box.height);
+    if (width === null || height === null || Number.isNaN(width) || Number.isNaN(height)) return null;
+    const pos = splitParts(per(positions, i) ?? "0% 0%");
+    const offset = (value, total, span) => {
+      if (value?.endsWith("%")) return parseFloat(value) / 100 * (total - span);
+      if (value?.endsWith("px")) return parseFloat(value);
+      return null;
+    };
+    const offsetX = offset(pos[0], box.width, width);
+    const offsetY = offset(pos[1] ?? "50%", box.height, height);
+    if (offsetX === null || offsetY === null || Number.isNaN(offsetX) || Number.isNaN(offsetY)) return null;
+    const left = box.left + offsetX;
+    const top = box.top + offsetY;
+    return { left, top, right: left + width, bottom: top + height };
+  });
+}
+function splitParts(value) {
+  const out = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of value) {
+    if (ch === "(") depth += 1;
+    if (ch === ")") depth -= 1;
+    if (/\s/.test(ch) && depth === 0) {
+      if (current) out.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current) out.push(current);
+  return out;
+}
+function splitLayers(value) {
+  if (!value || value === "none") return value === "none" ? ["none"] : [];
+  const out = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of value) {
+    if (ch === "(") depth += 1;
+    if (ch === ")") depth -= 1;
+    if (ch === "," && depth === 0) {
+      out.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) out.push(current.trim());
+  return out;
+}
+function backgroundImagePaintRect(element, intrinsic) {
+  const style = getComputedStyle(element);
+  if (splitLayers(style.backgroundImage).filter((layer) => layer !== "none").length !== 1) return null;
+  const box = element.getBoundingClientRect();
+  return imagePaintRectInBox(
+    { left: box.left, top: box.top, right: box.right, bottom: box.bottom },
+    { repeat: style.backgroundRepeat, size: style.backgroundSize, position: style.backgroundPosition },
+    intrinsic
+  );
+}
+function imagePaintRectInBox(box, meta2, intrinsic) {
+  if (!box || !meta2) return null;
+  if (meta2.repeat !== "no-repeat") return null;
+  if (meta2.size === "cover" || meta2.size === "contain") return null;
+  const boxWidth = box.right - box.left;
+  const boxHeight = box.bottom - box.top;
+  const dimension = (value, total, auto) => {
+    if (value?.endsWith("px")) return parseFloat(value);
+    if (value?.endsWith("%")) return parseFloat(value) / 100 * total;
+    return auto;
+  };
+  const size = meta2.size.split(" ");
+  const width = dimension(size[0], boxWidth, intrinsic?.width);
+  const height = dimension(size[1] ?? size[0], boxHeight, intrinsic?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  const offset = (value, total, extent) => {
+    if (value?.endsWith("%")) return parseFloat(value) / 100 * (total - extent);
+    if (value?.endsWith("px")) return parseFloat(value);
+    return null;
+  };
+  const pos = meta2.position.split(" ");
+  const offsetX = offset(pos[0], boxWidth, width);
+  const offsetY = offset(pos[1] ?? "50%", boxHeight, height);
+  if (offsetX === null || offsetY === null || Number.isNaN(offsetX) || Number.isNaN(offsetY)) return null;
+  const left = box.left + offsetX;
+  const top = box.top + offsetY;
+  return { left, top, right: left + width, bottom: top + height };
+}
+function rangeWithBackdrop(range, under, overlays = []) {
+  if (!range || !range.hasAlpha) return range;
+  if (!under || under.a < 1) return null;
+  const shown = overlays.length ? applyOverlays(under, overlays) : under;
+  const underLum = luminance(shown);
+  return {
+    ...range,
+    min: Math.min(range.min, underLum),
+    max: Math.max(range.max, underLum),
+    minColor: underLum < range.min ? shown : range.minColor,
+    maxColor: underLum > range.max ? shown : range.maxColor
+  };
+}
+function splitBackgroundLayers(backgroundImageCss) {
+  return splitLayers(backgroundImageCss);
+}
+function backgroundLayerUrl(layer) {
+  const match = /^url\(([\s\S]*)\)$/.exec((layer ?? "").trim());
+  if (!match) return null;
+  let inner = match[1].trim();
+  const quote = inner[0];
+  if ((quote === '"' || quote === "'") && inner.endsWith(quote)) {
+    inner = inner.slice(1, -1).replace(new RegExp(`\\\\${quote}`, "g"), quote);
+  }
+  return inner;
+}
+var GRADIENT_NON_COLOR = /^(?:(?:to|at|from|in|circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner)\b|calc\(|-?\d|\.\d)/i;
+function gradientStops(layer) {
+  const result = { colors: [], unparsed: 0, translucent: false, space: null };
+  const open = layer.indexOf("(");
+  const close = layer.lastIndexOf(")");
+  if (open === -1 || close <= open) return result;
+  for (const part of splitLayers(layer.slice(open + 1, close))) {
+    const space = /(?:^|\s)in\s+([a-z0-9-]+)/i.exec(part);
+    if (space && space[1].toLowerCase() !== "srgb") result.space = space[1].toLowerCase();
+    let token = null;
+    const call = /([a-z][a-z0-9-]*)\(/i.exec(part);
+    if (call) {
+      let depth = 0;
+      for (let i = call.index; i < part.length; i++) {
+        if (part[i] === "(") depth += 1;
+        if (part[i] === ")") {
+          depth -= 1;
+          if (depth === 0) {
+            token = part.slice(call.index, i + 1);
+            break;
+          }
+        }
+      }
+    } else {
+      token = part.trim().split(/\s+/)[0] ?? "";
+    }
+    if (!token || GRADIENT_NON_COLOR.test(token)) continue;
+    const color = /^currentcolor$/i.test(token) ? null : parseColor(token);
+    if (!color) {
+      result.unparsed += 1;
+      continue;
+    }
+    if (color.a < 1) result.translucent = true;
+    result.colors.push(color);
+  }
+  return result;
+}
+function sampledGradientRange(layer, overlays = [], steps = 16) {
+  const { colors, unparsed, translucent, space } = gradientStops(layer);
+  if (!colors.length || unparsed || translucent || space) return null;
+  const samples = [];
+  if (colors.length === 1) samples.push(colors[0]);
+  for (let i = 0; i + 1 < colors.length; i++) {
+    const from = colors[i];
+    const to = colors[i + 1];
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      samples.push({
+        r: from.r + (to.r - from.r) * t,
+        g: from.g + (to.g - from.g) * t,
+        b: from.b + (to.b - from.b) * t,
+        a: 1
+      });
+    }
+  }
+  const composited = samples.map((sample) => overlays.length ? applyOverlays(sample, overlays) : sample);
+  let min = Infinity;
+  let max2 = -Infinity;
+  let minColor = null;
+  let maxColor = null;
+  for (const sample of composited) {
+    const l = luminance(sample);
+    if (l < min) {
+      min = l;
+      minColor = sample;
+    }
+    if (l > max2) {
+      max2 = l;
+      maxColor = sample;
+    }
+  }
+  return { min, max: max2, minColor, maxColor, sampled: true };
+}
+function ratioFromLuminance(l1, l2) {
+  const [lighter, darker] = l1 > l2 ? [l1, l2] : [l2, l1];
+  return (lighter + 0.05) / (darker + 0.05);
+}
+function rangeVerdict(foreground, range, required) {
+  const textLum = luminance(foreground);
+  const inside = textLum >= range.min && textLum <= range.max;
+  const worst = inside ? 1 : Math.min(ratioFromLuminance(textLum, range.min), ratioFromLuminance(textLum, range.max));
+  const best = Math.max(ratioFromLuminance(textLum, range.min), ratioFromLuminance(textLum, range.max));
+  if (worst >= required) return { verdict: "pass", worst, best };
+  if (best < required) return { verdict: "fail", worst, best };
+  return { verdict: "mixed", worst, best };
+}
+function rootHasFirstLineRules(root) {
+  let has = firstLineRulesCache.get(root);
+  if (has !== void 0) return has;
+  has = false;
+  const scan = (rules) => {
+    for (const rule of rules) {
+      if (rule.selectorText && /::?first-(?:line|letter)\b/.test(rule.selectorText)) return true;
+      const inner = rule.cssRules ?? rule.styleSheet?.cssRules;
+      if (inner && scan(inner)) return true;
+    }
+    return false;
+  };
+  const sheets = [...root.styleSheets ?? [], ...root.adoptedStyleSheets ?? []];
+  for (const sheet of sheets) {
+    try {
+      if (scan(sheet.cssRules)) {
+        has = true;
+        break;
+      }
+    } catch {
+      has = true;
+      break;
+    }
+  }
+  firstLineRulesCache.set(root, has);
+  return has;
+}
+function pseudoTextColors(element, style) {
+  if (style.display === "inline" || style.display === "contents") return [];
+  if (!rootHasFirstLineRules(element.getRootNode())) return [];
+  const paintedColor = (s) => s.webkitTextFillColor && s.webkitTextFillColor !== s.color ? s.webkitTextFillColor : s.color;
+  const base = paintedColor(style);
+  const found = [];
+  for (const pseudo of ["::first-line", "::first-letter"]) {
+    const pseudoStyle = getComputedStyle(element, pseudo);
+    const css = paintedColor(pseudoStyle);
+    if (!css || css === base) continue;
+    const color = parseColor(css);
+    if (color) found.push({ pseudo, color, style: pseudoStyle });
+  }
+  return found;
+}
+var BOLD_WEIGHT = 600;
+function isLargeText(style) {
+  const size = parseFloat(style.fontSize);
+  const weight = parseInt(style.fontWeight, 10) || 400;
+  return size >= 24 || size >= 56 / 3 && weight >= BOLD_WEIGHT;
+}
+
 // src/engine/rules/wcag/3.1.2-valid-lang-parts.js
 var LANG_PATTERN2 = /^([a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*|[xXiI](-[a-zA-Z0-9]{1,8})+)$/;
-var SPOKEN_ATTRIBUTES = [
-  "aria-label",
-  "aria-description",
-  "aria-placeholder",
-  "aria-valuetext",
-  "aria-roledescription",
-  "title",
-  "placeholder"
-];
+var SPOKEN_ATTRIBUTES = ["aria-label", "aria-description", "aria-placeholder", "aria-valuetext", "aria-roledescription"];
+var SHOWN_ATTRIBUTES = ["title", "placeholder"];
 var WORDED_INPUT_TYPES = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "button", "submit", "reset"]);
 var spoken = (node, name) => Boolean(node.getAttribute(name)?.trim());
-function ownWords(node) {
-  if (SPOKEN_ATTRIBUTES.some((name) => spoken(node, name))) return true;
-  if (node.matches('img, area, input[type="image"]') && spoken(node, "alt")) return true;
-  if (node.matches("option, optgroup, track") && spoken(node, "label")) return true;
+function ownWords(node, unspoken) {
+  if (!unspoken) {
+    if (SPOKEN_ATTRIBUTES.some((name) => spoken(node, name))) return true;
+    if (node.matches('img, area, input[type="image"]') && spoken(node, "alt")) return true;
+    if (node.matches("optgroup, track") && spoken(node, "label")) return true;
+  }
+  if (SHOWN_ATTRIBUTES.some((name) => spoken(node, name))) return true;
+  if (node.tagName === "OPTION" && spoken(node, "label")) return true;
   if (node.tagName === "INPUT") {
     const type = (node.getAttribute("type") ?? "").trim().toLowerCase();
     if (type === "submit" || type === "reset") return true;
@@ -543,16 +1737,27 @@ function ownWords(node) {
   }
   return false;
 }
+function seen(box, element) {
+  const view = element.ownerDocument.defaultView;
+  if (!element.ownerDocument.documentElement.getBoundingClientRect().width) return true;
+  if (!box.width || !box.height) return false;
+  if (box.right + view.scrollX <= 0 || box.bottom + view.scrollY <= 0) return false;
+  return Boolean(paintableRect(element, box));
+}
 function governsText(element) {
-  const stack = [element];
+  for (let node = element.parentElement ?? element.getRootNode()?.host; node; node = node.parentElement ?? node.getRootNode()?.host) {
+    if (getComputedStyle(node).display === "none") return false;
+  }
+  const stack = [[element, Boolean(element.closest('[aria-hidden="true"]'))]];
   while (stack.length) {
-    const node = stack.pop();
+    const [node, above] = stack.pop();
+    const unspoken = above || node.getAttribute("aria-hidden") === "true";
     if (node !== element && spoken(node, "lang")) continue;
     if (node.matches("script, style, noscript, template")) continue;
     const style = getComputedStyle(node);
     if (style.display === "none") continue;
     const shown = style.visibility !== "hidden" && style.visibility !== "collapse";
-    if (shown && ownWords(node)) return true;
+    if (shown && ownWords(node, unspoken) && (!unspoken || seen(node.getBoundingClientRect(), node))) return true;
     let children = node.childNodes;
     if (node.tagName === "SLOT") {
       const assigned = node.assignedNodes?.() ?? [];
@@ -560,8 +1765,13 @@ function governsText(element) {
     } else if (node.shadowRoot) children = node.shadowRoot.childNodes;
     for (const child of children) {
       if (child.nodeType === 3) {
-        if (shown && /\S/.test(child.textContent)) return true;
-      } else if (child.nodeType === 1) stack.push(child);
+        if (!shown || !/\S/.test(child.textContent)) continue;
+        if (!unspoken) return true;
+        const range = node.ownerDocument.createRange();
+        range.selectNodeContents(child);
+        const box = typeof range.getBoundingClientRect === "function" ? range.getBoundingClientRect() : node.getBoundingClientRect();
+        if (seen(box, node)) return true;
+      } else if (child.nodeType === 1) stack.push([child, unspoken]);
     }
   }
   return false;
@@ -574,13 +1784,22 @@ var valid_lang_parts_default = {
   help: "lang attributes on page parts must be valid",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/language-of-parts.html",
   selector: "[lang]:not(html)",
+  // Not the default filter, which drops an element that is aria-hidden or
+  // has no box of its own. Neither settles whether words inherit the tag:
+  // aria-hidden text is still seen, and the language of seen text is used
+  // by more than screen readers (hyphenation, font choice, translation,
+  // spelling); visibility:hidden on the element leaves a descendant free to
+  // show itself. governsText rules on all of it (ACT de46e4 Failed
+  // Example 4 generalised to the element itself).
+  visibleOnly: false,
   evaluate(element) {
     const lang = element.getAttribute("lang").trim();
     if (lang === "" || LANG_PATTERN2.test(lang)) return { status: "pass" };
     if (!governsText(element)) return { status: "pass" };
+    const unspoken = element.closest('[aria-hidden="true"]');
     return {
       status: "fail",
-      message: `lang="${lang}" is not a valid language tag, so screen readers may switch to the wrong pronunciation.`,
+      message: unspoken ? `lang="${lang}" is not a valid language tag. aria-hidden keeps this text from screen readers, but it is still seen, and browsers and translation tools use the tag to hyphenate, pick fonts and translate it.` : `lang="${lang}" is not a valid language tag, so screen readers may switch to the wrong pronunciation.`,
       fix: 'Use a BCP 47 tag such as lang="fr" or lang="de-AT".'
     };
   }
@@ -1660,1101 +2879,6 @@ var meta_viewport_default = {
   }
 };
 
-// src/engine/lib/contrast.js
-var LEGACY_RGB = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+%?)\s*)?\)$/;
-var MODERN_RGB = /^rgba?\(\s*([\d.]+%?)\s+([\d.]+%?)\s+([\d.]+%?)\s*(?:\/\s*([\d.]+%?)\s*)?\)$/;
-var SRGB_COLOR = /^color\(\s*srgb\s+(-?[\d.]+%?)\s+(-?[\d.]+%?)\s+(-?[\d.]+%?)\s*(?:\/\s*([\d.]+%?)\s*)?\)$/;
-var clamp255 = (value) => Math.min(255, Math.max(0, value));
-var channel = (token, unitScale) => clamp255(token.endsWith("%") ? parseFloat(token) / 100 * 255 : parseFloat(token) * unitScale);
-var alphaOf = (token) => {
-  if (token === void 0) return 1;
-  const value = parseFloat(token);
-  return Math.min(1, Math.max(0, token.endsWith("%") ? value / 100 : value));
-};
-function parseKnownSyntax(cssColor) {
-  const rgb = LEGACY_RGB.exec(cssColor) ?? MODERN_RGB.exec(cssColor);
-  if (rgb) return { r: channel(rgb[1], 1), g: channel(rgb[2], 1), b: channel(rgb[3], 1), a: alphaOf(rgb[4]) };
-  const srgb = SRGB_COLOR.exec(cssColor);
-  if (srgb) return { r: channel(srgb[1], 255), g: channel(srgb[2], 255), b: channel(srgb[3], 255), a: alphaOf(srgb[4]) };
-  return null;
-}
-var probe;
-var probeUnavailable = false;
-function paintToSrgb(cssColor) {
-  if (probeUnavailable) return null;
-  try {
-    probe ??= document.createElement("canvas").getContext("2d", { willReadFrequently: true });
-    if (!probe) {
-      probeUnavailable = true;
-      return null;
-    }
-    probe.fillStyle = "#000000";
-    probe.fillStyle = cssColor;
-    const asBlack = probe.fillStyle;
-    probe.fillStyle = "#ffffff";
-    probe.fillStyle = cssColor;
-    if (asBlack === "#000000" && probe.fillStyle === "#ffffff") return null;
-    probe.clearRect(0, 0, 1, 1);
-    probe.fillRect(0, 0, 1, 1);
-    const [r, g, b, a] = probe.getImageData(0, 0, 1, 1).data;
-    return { r, g, b, a: a / 255 };
-  } catch {
-    probeUnavailable = true;
-    return null;
-  }
-}
-var colorCache = /* @__PURE__ */ new Map();
-function parseColor(cssColor) {
-  if (cssColor == null) return null;
-  if (colorCache.has(cssColor)) return colorCache.get(cssColor);
-  const color = parseKnownSyntax(cssColor) ?? paintToSrgb(cssColor);
-  if (colorCache.size < 1e4) colorCache.set(cssColor, color);
-  return color;
-}
-function channelLuminance(value) {
-  const c = value / 255;
-  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-}
-function luminance({ r, g, b }) {
-  return 0.2126 * channelLuminance(r) + 0.7152 * channelLuminance(g) + 0.0722 * channelLuminance(b);
-}
-function contrastRatio(foreground, background) {
-  const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
-  return (lighter + 0.05) / (darker + 0.05);
-}
-var channelText = (value) => String(Math.round(value * 100) / 100);
-var asRgb = (color) => `rgb(${channelText(color.r)}, ${channelText(color.g)}, ${channelText(color.b)})`;
-function showRatio(ratio) {
-  const text = ratio >= 10 ? (Math.floor(ratio * 10) / 10).toFixed(1) : (Math.floor(ratio * 100) / 100).toFixed(2);
-  return text.replace(/\.0+$/, "");
-}
-function composite(top, bottom) {
-  const a = top.a + bottom.a * (1 - top.a);
-  const blend = (t, b) => (t * top.a + b * bottom.a * (1 - top.a)) / (a || 1);
-  return { r: blend(top.r, bottom.r), g: blend(top.g, bottom.g), b: blend(top.b, bottom.b), a };
-}
-var backgroundCache = /* @__PURE__ */ new WeakMap();
-var opacityCache = /* @__PURE__ */ new WeakMap();
-var opacityAnimatorsCache = null;
-var mediaRectsCache = null;
-var panelRectsCache = null;
-var pseudoCache = /* @__PURE__ */ new WeakMap();
-var zeroClipCache = /* @__PURE__ */ new WeakMap();
-var firstLineRulesCache = /* @__PURE__ */ new WeakMap();
-var chainEffectCache = /* @__PURE__ */ new WeakMap();
-var uncoveredEffectCache = /* @__PURE__ */ new WeakMap();
-var blendBackdropCache = /* @__PURE__ */ new WeakMap();
-var labelReferrersCache = /* @__PURE__ */ new WeakMap();
-var HAS_IMAGE = Symbol("background-image in chain");
-function labelReferrers(root, isInactive) {
-  let referrers = labelReferrersCache.get(root);
-  if (!referrers) {
-    referrers = /* @__PURE__ */ new Map();
-    for (const referrer of root.querySelectorAll("[aria-labelledby]")) {
-      const inactive = isInactive(referrer);
-      for (const id of referrer.getAttribute("aria-labelledby").split(/\s+/)) {
-        if (!id) continue;
-        const count2 = referrers.get(id) ?? { inactive: 0, other: 0 };
-        count2[inactive ? "inactive" : "other"] += 1;
-        referrers.set(id, count2);
-      }
-    }
-    labelReferrersCache.set(root, referrers);
-  }
-  return referrers;
-}
-var flatParentOf = (node) => node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host ?? null;
-function colourChangingFilter(filter) {
-  if (!filter || filter === "none") return false;
-  let depth = 0;
-  let name = "";
-  for (const ch of filter) {
-    if (ch === "(") {
-      if (depth === 0 && name && name !== "drop-shadow") return true;
-      depth += 1;
-      name = "";
-    } else if (ch === ")") {
-      depth -= 1;
-    } else if (depth === 0) {
-      name = /[a-z-]/i.test(ch) ? name + ch.toLowerCase() : "";
-    }
-  }
-  return false;
-}
-function chainEffect(node) {
-  if (!node || node.nodeType !== 1) return false;
-  if (chainEffectCache.has(node)) return chainEffectCache.get(node);
-  const style = getComputedStyle(node);
-  const own = colourChangingFilter(style.filter) || style.mixBlendMode && style.mixBlendMode !== "normal";
-  const result = Boolean(own || chainEffect(flatParentOf(node)));
-  chainEffectCache.set(node, result);
-  return result;
-}
-function uncoveredEffect(node) {
-  if (!node || node.nodeType !== 1) return false;
-  if (uncoveredEffectCache.has(node)) return uncoveredEffectCache.get(node);
-  const style = getComputedStyle(node);
-  let result;
-  if ((parseColor(style.backgroundColor)?.a ?? 0) >= 1) result = false;
-  else if (style.backdropFilter && style.backdropFilter !== "none" || style.filter && style.filter !== "none") result = true;
-  else result = uncoveredEffect(flatParentOf(node));
-  uncoveredEffectCache.set(node, result);
-  return result;
-}
-function hasPaintEffects(element) {
-  if (!element || element.nodeType !== 1) return false;
-  return chainEffect(element) || uncoveredEffect(element);
-}
-function isolatedBlendBackdrop(element) {
-  if (!element || element.nodeType !== 1) return false;
-  if (blendBackdropCache.has(element)) return blendBackdropCache.get(element);
-  const style = getComputedStyle(element);
-  const background = parseColor(style.backgroundColor);
-  let result = false;
-  if (!background || background.a < 1) {
-    const isolated = style.isolation === "isolate" || ["fixed", "sticky"].includes(style.position) || style.zIndex !== "auto" || ["transform", "perspective", "filter", "backdropFilter", "clipPath", "maskImage", "webkitMaskImage"].some((key) => style[key] && style[key] !== "none") || /(?:paint|layout|strict|content)/.test(style.contain) || style.willChange && style.willChange !== "auto" || parseFloat(style.opacity) < 1;
-    result = isolated || isolatedBlendBackdrop(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host);
-  }
-  blendBackdropCache.set(element, result);
-  return result;
-}
-function inZeroClipSubtree(element) {
-  for (let a = element; a; a = a.parentElement) {
-    let hidden = zeroClipCache.get(a);
-    if (hidden === void 0) {
-      const s = getComputedStyle(a);
-      hidden = false;
-      if (s.clip !== "auto" && s.position !== "static") {
-        const m = /rect\(([^)]+)\)/.exec(s.clip);
-        if (m) {
-          const parts = m[1].split(",").map((v) => v.trim());
-          if (!parts.includes("auto") && parts.length === 4) {
-            const [t, r, b, l] = parts.map(parseFloat);
-            if (r - l <= 0 || b - t <= 0) hidden = true;
-          }
-        }
-      }
-      if (!hidden && s.clipPath && s.clipPath !== "none") {
-        const m = /inset\(([^)]+)\)/.exec(s.clipPath);
-        if (m && !m[1].includes("px")) {
-          const parts = m[1].trim().split(/\s+/).map(parseFloat);
-          const [t, r = t, b = t, l = r] = parts;
-          if (t + b >= 100 || l + r >= 100) hidden = true;
-        }
-      }
-      zeroClipCache.set(a, hidden);
-    }
-    if (hidden) return true;
-  }
-  return false;
-}
-function backgroundColorSource(element) {
-  for (let node = element; node && node.nodeType === 1; node = node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host) {
-    const style = getComputedStyle(node);
-    if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage)) return null;
-    const color = parseColor(style.backgroundColor);
-    if (!color || color.a === 0) continue;
-    return color.a >= 1 ? style.backgroundColor : null;
-  }
-  return null;
-}
-var transparentImages = /* @__PURE__ */ new Set();
-function paintsNothing(backgroundImage) {
-  if (backgroundImage.includes("gradient(")) return false;
-  const urls = [...backgroundImage.matchAll(/url\(["']?(.*?)["']?\)/g)].map((m) => m[1]);
-  return urls.length > 0 && urls.every((url) => transparentImages.has(url));
-}
-function canvasColor(doc) {
-  const scheme = getComputedStyle(doc.documentElement).colorScheme ?? "";
-  const prefersDark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
-  const useDark = /dark/.test(scheme) && (!/light/.test(scheme) || prefersDark);
-  return useDark ? { r: 18, g: 18, b: 18, a: 1 } : { r: 255, g: 255, b: 255, a: 1 };
-}
-function resolveBackground(element, doc) {
-  if (!element || element.nodeType !== 1) return canvasColor(doc);
-  if (backgroundCache.has(element)) {
-    const cached = backgroundCache.get(element);
-    return cached === HAS_IMAGE ? null : cached;
-  }
-  let result;
-  const style = getComputedStyle(element);
-  if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage)) {
-    result = null;
-  } else {
-    const color = parseColor(style.backgroundColor);
-    if (color && color.a >= 1) {
-      result = color;
-    } else {
-      const behind = resolveBackground(
-        element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host,
-        doc
-      );
-      result = behind === null ? null : color && color.a > 0 ? composite(color, behind) : behind;
-    }
-  }
-  backgroundCache.set(element, result === null ? HAS_IMAGE : result);
-  return result;
-}
-function effectiveBackground(element) {
-  return resolveBackground(element, element.ownerDocument);
-}
-function opacityAnimators(doc) {
-  if (!opacityAnimatorsCache) {
-    opacityAnimatorsCache = /* @__PURE__ */ new WeakMap();
-    for (const animation of typeof doc.getAnimations === "function" ? doc.getAnimations() : []) {
-      if (animation.playState !== "running") continue;
-      const target2 = animation.effect?.target;
-      if (!target2) continue;
-      const keyframes = animation.effect.getKeyframes?.() ?? [];
-      if (!keyframes.some((frame) => frame.opacity !== void 0)) continue;
-      let rest = null;
-      const timing = animation.effect.getComputedTiming?.() ?? {};
-      if (Number.isFinite(timing.endTime) && (timing.fill === "forwards" || timing.fill === "both")) {
-        const last = [...keyframes].reverse().find((frame) => frame.opacity !== void 0);
-        const value = parseFloat(last?.opacity);
-        if (Number.isFinite(value)) rest = value;
-      }
-      const previous = opacityAnimatorsCache.get(target2);
-      if (previous === void 0 || rest !== null && (previous === null || rest < previous)) {
-        opacityAnimatorsCache.set(target2, rest);
-      }
-    }
-  }
-  return opacityAnimatorsCache;
-}
-function opacityAnimating(element) {
-  const animators = opacityAnimators(element.ownerDocument);
-  for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
-    if (animators.has(node)) return true;
-  }
-  return false;
-}
-function restingOpacity(element) {
-  const animators = opacityAnimators(element.ownerDocument);
-  let product = 1;
-  for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
-    if (animators.has(node)) {
-      const rest = animators.get(node);
-      product *= rest === null ? 1 : rest;
-    } else {
-      product *= parseFloat(getComputedStyle(node).opacity) || 0;
-    }
-  }
-  return product;
-}
-function cumulativeOpacity(element) {
-  if (!element || element.nodeType !== 1) return 1;
-  let cached = opacityCache.get(element);
-  if (cached === void 0) {
-    const parent = element.parentElement ?? element.getRootNode()?.host ?? null;
-    cached = (parseFloat(getComputedStyle(element).opacity) || 0) * cumulativeOpacity(parent);
-    opacityCache.set(element, cached);
-  }
-  return cached;
-}
-function nodeRestingOpacity(node) {
-  const animators = opacityAnimators(node.ownerDocument);
-  if (animators.has(node)) {
-    const rest = animators.get(node);
-    return rest === null ? 1 : rest;
-  }
-  const value = parseFloat(getComputedStyle(node).opacity);
-  return Number.isFinite(value) ? value : 1;
-}
-function opacityGroupPaint(element, foreground) {
-  const flatParent = (node) => node.parentElement ?? node.getRootNode()?.host ?? null;
-  let top = null;
-  let opacity = 1;
-  for (let node = element; node && node.nodeType === 1; node = flatParent(node)) {
-    const own = nodeRestingOpacity(node);
-    if (own < 1) {
-      top = node;
-      opacity *= own;
-    }
-  }
-  if (!top) return null;
-  let text = { ...foreground };
-  let paint = { r: 0, g: 0, b: 0, a: 0 };
-  let painted = false;
-  for (let node = element; node && node.nodeType === 1; node = flatParent(node)) {
-    const style = getComputedStyle(node);
-    if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage)) return null;
-    if (style.mixBlendMode && style.mixBlendMode !== "normal" || style.filter && style.filter !== "none" || style.backdropFilter && style.backdropFilter !== "none") return null;
-    const color = parseColor(style.backgroundColor);
-    if (color && color.a > 0) {
-      text = composite(text, color);
-      paint = composite(paint, color);
-      painted = true;
-    }
-    const own = nodeRestingOpacity(node);
-    if (own < 1) {
-      text = { ...text, a: text.a * own };
-      paint = { ...paint, a: paint.a * own };
-    }
-    if (node === top) break;
-  }
-  if (!painted) return null;
-  const behindNode = flatParent(top);
-  const behind = behindNode ? effectiveBackground(behindNode) : canvasColor(element.ownerDocument);
-  if (!behind) return { unresolved: true, opacity };
-  return { foreground: composite(text, behind), background: composite(paint, behind), opacity, text, paint };
-}
-function backgroundObscured(element) {
-  const doc = element.ownerDocument;
-  if (typeof doc.elementsFromPoint !== "function") return null;
-  const own = parseColor(getComputedStyle(element).backgroundColor);
-  if (own && own.a >= 1) return null;
-  const rect = element.getBoundingClientRect();
-  if (!rect.width || !rect.height) return null;
-  const win = doc.defaultView;
-  const x = Math.min(Math.max(rect.left + rect.width / 2, 0), win.innerWidth - 1);
-  const y = Math.min(Math.max(rect.top + rect.height / 2, 0), win.innerHeight - 1);
-  const stack = doc.elementsFromPoint(x, y);
-  const start = stack.indexOf(element);
-  if (start === -1) return "unverifiable";
-  for (const layer of stack.slice(start + 1)) {
-    if (layer.contains(element)) {
-      const style = getComputedStyle(layer);
-      if (style.backgroundImage !== "none") return layer;
-      const bg = parseColor(style.backgroundColor);
-      if (bg && bg.a >= 1) return null;
-      continue;
-    }
-    return layer;
-  }
-  return null;
-}
-function textSamplePoint(element) {
-  for (const node of element.childNodes) {
-    if (node.nodeType !== 3 || !node.textContent.trim()) continue;
-    const range = element.ownerDocument.createRange();
-    range.selectNodeContents(node);
-    const rect2 = range.getClientRects()[0];
-    if (rect2 && rect2.width && rect2.height) {
-      return { x: rect2.left + rect2.width / 2, y: rect2.top + rect2.height / 2 };
-    }
-  }
-  const rect = element.getBoundingClientRect();
-  return rect.width && rect.height ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
-}
-var px = (value) => typeof value === "string" && value.endsWith("px") ? parseFloat(value) : NaN;
-function containingBlockFor(host2) {
-  for (let node = host2; node && node.nodeType === 1; node = node.parentElement) {
-    const style = getComputedStyle(node);
-    if (style.position !== "static" || style.transform !== "none" || style.filter !== "none" || /paint|layout|strict|content/.test(style.contain ?? "")) return node;
-  }
-  return null;
-}
-function pseudoRect(host2, style) {
-  const block = containingBlockFor(host2);
-  if (!block) return null;
-  const hostStyle = getComputedStyle(block);
-  const hostRect = block.getBoundingClientRect();
-  const borderLeft = px(hostStyle.borderLeftWidth) || 0;
-  const borderTop = px(hostStyle.borderTopWidth) || 0;
-  const cbLeft = hostRect.left + borderLeft;
-  const cbTop = hostRect.top + borderTop;
-  const cbWidth = hostRect.width - borderLeft - (px(hostStyle.borderRightWidth) || 0);
-  const cbHeight = hostRect.height - borderTop - (px(hostStyle.borderBottomWidth) || 0);
-  const extraX = (px(style.paddingLeft) || 0) + (px(style.paddingRight) || 0) + (px(style.borderLeftWidth) || 0) + (px(style.borderRightWidth) || 0);
-  const extraY = (px(style.paddingTop) || 0) + (px(style.paddingBottom) || 0) + (px(style.borderTopWidth) || 0) + (px(style.borderBottomWidth) || 0);
-  const span = (startValue, endValue, sizeValue, origin, extent, extra) => {
-    const start = px(startValue);
-    const end = px(endValue);
-    const size = px(sizeValue);
-    if (Number.isFinite(start) && Number.isFinite(end)) return [origin + start, origin + extent - end];
-    if (Number.isFinite(start) && Number.isFinite(size)) return [origin + start, origin + start + size + extra];
-    if (Number.isFinite(end) && Number.isFinite(size)) {
-      const far = origin + extent - end;
-      return [far - size - extra, far];
-    }
-    return null;
-  };
-  const x = span(style.left, style.right, style.width, cbLeft, cbWidth, extraX);
-  const y = span(style.top, style.bottom, style.height, cbTop, cbHeight, extraY);
-  if (!x || !y) return null;
-  let [left, right] = x;
-  let [top, bottom] = y;
-  if (style.transform && style.transform !== "none") {
-    const matrix = /^matrix\(([^)]+)\)$/.exec(style.transform);
-    if (!matrix) return null;
-    const [a, b, c, d, e, f] = matrix[1].split(",").map(Number);
-    if (a !== 1 || b !== 0 || c !== 0 || d !== 1) return null;
-    left += e;
-    right += e;
-    top += f;
-    bottom += f;
-  }
-  return { left, top, right, bottom, empty: !(right > left) || !(bottom > top) };
-}
-function pseudoLayers(host2) {
-  let layers = pseudoCache.get(host2);
-  if (layers !== void 0) return layers;
-  layers = [];
-  for (const which of ["::before", "::after"]) {
-    const style = getComputedStyle(host2, which);
-    if (style.content === "none" || style.display === "none" || style.visibility === "hidden") continue;
-    const color = parseColor(style.backgroundColor);
-    const paints = style.backgroundImage !== "none" || (color?.a ?? 0) > 0;
-    if (!paints) continue;
-    if (style.position !== "absolute" && style.position !== "fixed") continue;
-    const opacity = parseFloat(style.opacity);
-    const opacityFactor = Number.isFinite(opacity) ? opacity : 1;
-    const rect = style.position === "absolute" ? pseudoRect(host2, style) : null;
-    if (!rect) {
-      const alphaBound = Math.min(1, opacityFactor * (style.backgroundImage !== "none" ? 1 : color.a));
-      if (alphaBound > 0) layers.push({ film: alphaBound, fixed: style.position === "fixed" });
-      continue;
-    }
-    if (rect.empty) continue;
-    const mask = style.maskImage || style.webkitMaskImage;
-    if (mask && mask !== "none" || style.clipPath && style.clipPath !== "none") {
-      const alphaBound = Math.min(1, opacityFactor * (style.backgroundImage !== "none" ? 1 : color.a));
-      if (alphaBound > 0) layers.push({ rect, shaped: alphaBound });
-      continue;
-    }
-    let layerColor = color;
-    if (layerColor && opacityFactor < 1) layerColor = { ...layerColor, a: layerColor.a * opacityFactor };
-    const imageCss = style.backgroundImage !== "none" ? style.backgroundImage : null;
-    const imageMeta = imageCss ? { repeat: style.backgroundRepeat, size: style.backgroundSize, position: style.backgroundPosition } : null;
-    layers.push({ rect, color: layerColor, imageCss, imageMeta });
-  }
-  pseudoCache.set(host2, layers);
-  return layers;
-}
-function pseudoBackdropForText(element) {
-  const point = textSamplePoint(element);
-  if (!point) return null;
-  let acc = null;
-  let image = null;
-  let settled = false;
-  let film = 0;
-  let shaped = false;
-  let crossed = false;
-  let beyondPaint = false;
-  for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
-    for (const layer of pseudoLayers(node)) {
-      if (layer.film) {
-        if (!layer.fixed && crossed) continue;
-        film = 1 - (1 - film) * (1 - layer.film);
-        continue;
-      }
-      if (settled) continue;
-      const { rect, color, imageCss } = layer;
-      if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) continue;
-      if (layer.shaped) {
-        film = 1 - (1 - film) * (1 - layer.shaped);
-        shaped = true;
-        continue;
-      }
-      if (imageCss) {
-        image = { css: imageCss, element: node, box: rect, meta: layer.imageMeta };
-        settled = true;
-        beyondPaint = beyondPaint || crossed;
-        continue;
-      }
-      if (!color || color.a === 0) continue;
-      acc = acc ? composite(acc, color) : color;
-      beyondPaint = beyondPaint || crossed;
-      if (acc.a >= 1) settled = true;
-    }
-    if (!crossed) {
-      const style = getComputedStyle(node);
-      if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage) || (parseColor(style.backgroundColor)?.a ?? 0) >= 1) crossed = true;
-    }
-  }
-  const filmed = film > 0 && { film, ...shaped && { shaped } };
-  if (image) return { image, ...filmed, ...beyondPaint && { beyondPaint } };
-  if (acc) return { color: acc, ...filmed, ...beyondPaint && { beyondPaint } };
-  return filmed || null;
-}
-function filmedContrastBounds(foreground, background, film) {
-  const ratios = [contrastRatio(foreground, background)];
-  const textLum = luminance(foreground);
-  const sides = [];
-  for (const channel2 of [0, 255]) {
-    const paint = { r: channel2, g: channel2, b: channel2, a: film };
-    const shiftedBackground = composite(paint, background);
-    ratios.push(contrastRatio(foreground, shiftedBackground));
-    ratios.push(contrastRatio(composite(paint, foreground), shiftedBackground));
-    sides.push(Math.sign(textLum - luminance(shiftedBackground)));
-  }
-  return {
-    min: Math.min(...ratios),
-    max: Math.max(...ratios),
-    crossed: sides[0] !== sides[1]
-  };
-}
-function scrimIn(layersAbove, element, win) {
-  const rect = element.getBoundingClientRect();
-  const found = [];
-  for (const layer of layersAbove) {
-    if (layer.contains(element) || element.contains(layer)) continue;
-    const style = getComputedStyle(layer);
-    const color = parseColor(style.backgroundColor);
-    const alpha = (color ? color.a : 0) * (parseFloat(style.opacity) || 1);
-    const hasBackdropFilter = style.backdropFilter && style.backdropFilter !== "none";
-    if (!hasBackdropFilter && (alpha < 0.15 || alpha >= 1)) continue;
-    const r = layer.getBoundingClientRect();
-    const coversViewport = (Math.min(r.right, win.innerWidth) - Math.max(r.left, 0)) * (Math.min(r.bottom, win.innerHeight) - Math.max(r.top, 0)) >= 0.6 * win.innerWidth * win.innerHeight;
-    const coversElement = r.left <= rect.left + 1 && r.top <= rect.top + 1 && r.right >= rect.right - 1 && r.bottom >= rect.bottom - 1;
-    if (coversViewport && coversElement) found.push(layer);
-  }
-  return found.length ? found : null;
-}
-function scrimPaint(layers) {
-  const paints = [];
-  for (const layer of layers) {
-    const style = getComputedStyle(layer);
-    if (style.backdropFilter && style.backdropFilter !== "none") return null;
-    if (style.filter && style.filter !== "none") return null;
-    if (style.mixBlendMode && style.mixBlendMode !== "normal") return null;
-    if (style.backgroundImage !== "none") return null;
-    const color = parseColor(style.backgroundColor);
-    if (!color) return null;
-    const alpha = color.a * (parseFloat(style.opacity) || 1);
-    if (alpha <= 0) continue;
-    paints.push({ ...color, a: alpha });
-  }
-  return paints.length ? paints : null;
-}
-function paintedBackdrop(element) {
-  const doc = element.ownerDocument;
-  const win = doc.defaultView;
-  if (typeof doc.elementsFromPoint !== "function") return "unresolved";
-  const point = textSamplePoint(element);
-  if (!point) return "unresolved";
-  if (point.x < 0 || point.y < 0 || point.x >= win.innerWidth || point.y >= win.innerHeight) {
-    return "offscreen";
-  }
-  const stack = doc.elementsFromPoint(point.x, point.y);
-  const start = stack.indexOf(element);
-  const scrim = start > 0 ? scrimIn(stack.slice(0, start), element, win) : null;
-  let acc = null;
-  const overlays = [];
-  const own = parseColor(getComputedStyle(element).backgroundColor);
-  if (own && own.a > 0) {
-    if (own.a >= 1) return { color: own, scrim };
-    acc = own;
-    overlays.push(own);
-  }
-  if (start === -1) return "unresolved";
-  const missing = [];
-  const inStack = new Set(stack);
-  for (let a = element.parentElement ?? element.getRootNode()?.host; a && a.nodeType === 1; a = a.parentElement ?? a.getRootNode()?.host) {
-    if (inStack.has(a)) continue;
-    const box = a.getBoundingClientRect();
-    if (point.x < box.left || point.x >= box.right || point.y < box.top || point.y >= box.bottom) continue;
-    const st = getComputedStyle(a);
-    const c = parseColor(st.backgroundColor);
-    if (c && c.a > 0 || st.backgroundImage !== "none" && !paintsNothing(st.backgroundImage)) missing.push(a);
-  }
-  const layers = [];
-  for (const layer of stack.slice(start + 1)) {
-    while (missing.length && !missing[0].contains(layer)) layers.push(missing.shift());
-    layers.push(layer);
-  }
-  layers.push(...missing);
-  for (const layer of layers) {
-    if (/^(img|video|canvas|svg|picture|object|embed|iframe)$/i.test(layer.tagName)) {
-      return { image: layer, scrim, overlays };
-    }
-    const style = getComputedStyle(layer);
-    if (layer.shadowRoot) return "unresolved";
-    if (style.mixBlendMode && style.mixBlendMode !== "normal" || style.filter && style.filter !== "none" || style.backdropFilter && style.backdropFilter !== "none") return "unresolved";
-    if (style.backgroundImage !== "none") {
-      const rects = backgroundImagePaintRects(layer);
-      const covers = (r) => !r || point.x >= r.left && point.x < r.right && point.y >= r.top && point.y < r.bottom;
-      if (!rects.length || rects.some(covers)) return { image: layer, scrim, overlays };
-    }
-    let color = parseColor(style.backgroundColor);
-    if (!color) return "unresolved";
-    const layerOpacity = parseFloat(style.opacity);
-    if (layerOpacity < 1) color = { ...color, a: color.a * layerOpacity };
-    if (color.a === 0) continue;
-    acc = acc ? composite(acc, color) : color;
-    if (acc.a >= 1) return { color: acc, scrim };
-    overlays.push(color);
-  }
-  const canvas = canvasColor(doc);
-  return { color: acc ? composite(acc, canvas) : canvas, scrim };
-}
-function opaquePanelRects(doc) {
-  if (!panelRectsCache) {
-    panelRectsCache = { panels: [], veil: null };
-    const win = doc.defaultView;
-    const all = doc.querySelectorAll("body *");
-    if (all.length <= 3e4) {
-      for (const el of all) {
-        const style = getComputedStyle(el);
-        if (style.position === "static" && style.cssFloat === "none") continue;
-        const color = parseColor(style.backgroundColor);
-        const rect = el.getBoundingClientRect();
-        if (color && color.a >= 1 && rect.width >= 24 && rect.height >= 12) {
-          panelRectsCache.panels.push({ element: el, rect, color, hitTestBlind: style.pointerEvents === "none" });
-        }
-        if (!panelRectsCache.veil && (style.position === "fixed" || style.position === "sticky") && style.visibility !== "hidden") {
-          const alpha = (color ? color.a : 0) * (parseFloat(style.opacity) || 1);
-          const hasBackdropFilter = style.backdropFilter && style.backdropFilter !== "none";
-          const coversViewport = rect.width >= 0.9 * win.innerWidth && rect.height >= 0.9 * win.innerHeight;
-          if (coversViewport && (hasBackdropFilter || alpha >= 0.15 && alpha < 1)) {
-            panelRectsCache.veil = el;
-          }
-        }
-      }
-    }
-  }
-  return panelRectsCache.panels;
-}
-function viewportVeil(doc) {
-  opaquePanelRects(doc);
-  return panelRectsCache.veil;
-}
-function parseTextShadows(cssText) {
-  if (!cssText || cssText === "none") return [];
-  const layers = [];
-  for (const part of cssText.split(/,(?![^(]*\))/)) {
-    const colorMatch = /rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}\b/.exec(part);
-    const lengths = [...part.replace(colorMatch?.[0] ?? "", "").matchAll(/(-?\d*\.?\d+)px/g)].map((m) => parseFloat(m[1]));
-    if (lengths.length < 2) continue;
-    layers.push({ x: lengths[0], y: lengths[1], blur: lengths[2] ?? 0, color: parseColor(colorMatch?.[0] ?? "") });
-  }
-  return layers;
-}
-function textShadowHalo(cssText, fontSize) {
-  const cap = Math.max(2, fontSize * 0.25);
-  const byColor = /* @__PURE__ */ new Map();
-  for (const layer of parseTextShadows(cssText)) {
-    if (!layer.color || layer.color.a < 0.95) continue;
-    if (layer.blur > cap || Math.abs(layer.x) > cap || Math.abs(layer.y) > cap) continue;
-    const key = `${Math.round(layer.color.r)},${Math.round(layer.color.g)},${Math.round(layer.color.b)}`;
-    const dirs = byColor.get(key) ?? { color: layer.color, up: false, down: false, left: false, right: false };
-    if (layer.blur >= Math.max(Math.abs(layer.x), Math.abs(layer.y), 0.5)) {
-      dirs.up = dirs.down = dirs.left = dirs.right = true;
-    } else {
-      if (layer.x > 0) dirs.right = true;
-      if (layer.x < 0) dirs.left = true;
-      if (layer.y > 0) dirs.down = true;
-      if (layer.y < 0) dirs.up = true;
-    }
-    byColor.set(key, dirs);
-  }
-  for (const dirs of byColor.values()) {
-    if (dirs.up && dirs.down && dirs.left && dirs.right) return dirs.color;
-  }
-  return null;
-}
-function textShadowNegligible(cssText, fontSize) {
-  return parseTextShadows(cssText).every((l) => !l.color || l.color.a < 0.15 || l.blur > fontSize * 0.5);
-}
-function paintableRect(element, rect) {
-  let { left, top, right, bottom } = rect;
-  let mode2 = getComputedStyle(element).position;
-  for (let a = element.parentElement; a; a = a.parentElement) {
-    if (mode2 === "fixed") break;
-    const s = getComputedStyle(a);
-    const containingBlock = s.position !== "static" || s.transform !== "none" || s.filter && s.filter !== "none";
-    if (mode2 === "absolute" && !containingBlock) continue;
-    const clips = (o) => o === "hidden" || o === "clip";
-    if (clips(s.overflowX) || clips(s.overflowY)) {
-      const b = a.getBoundingClientRect();
-      if (clips(s.overflowX)) {
-        left = Math.max(left, b.left);
-        right = Math.min(right, b.right);
-      }
-      if (clips(s.overflowY)) {
-        top = Math.max(top, b.top);
-        bottom = Math.min(bottom, b.bottom);
-      }
-      if (right <= left || bottom <= top) return null;
-    }
-    mode2 = s.position;
-  }
-  return {
-    left,
-    top,
-    right,
-    bottom,
-    width: right - left,
-    height: bottom - top,
-    x: left,
-    y: top
-  };
-}
-function mediaRects(doc) {
-  if (!mediaRectsCache) {
-    mediaRectsCache = [];
-    for (const el of doc.querySelectorAll("img, video, canvas, svg")) {
-      const rect = paintableRect(el, el.getBoundingClientRect());
-      if (rect && rect.width >= 8 && rect.height >= 8) {
-        mediaRectsCache.push({ element: el, rect, hitTestBlind: getComputedStyle(el).pointerEvents === "none" });
-      }
-    }
-  }
-  return mediaRectsCache;
-}
-function backgroundImageSource(element) {
-  const overlays = [];
-  for (let current = element; current; current = current.parentElement) {
-    const style = getComputedStyle(current);
-    if (style.backgroundImage !== "none") return { css: style.backgroundImage, element: current, overlays };
-    const color = parseColor(style.backgroundColor);
-    if (color && color.a >= 1) return null;
-    if (color && color.a > 0) overlays.push(color);
-  }
-  return null;
-}
-function applyOverlays(base, overlays) {
-  let result = base;
-  for (let i = overlays.length - 1; i >= 0; i--) result = composite(overlays[i], result);
-  return result;
-}
-var overlayKey = (overlays) => overlays.map((c) => `${c.r},${c.g},${c.b},${c.a}`).join(";");
-var imageRangeCache = /* @__PURE__ */ new Map();
-var MAX_SAMPLE_AXIS = 1024;
-function sampleGridFor(extent) {
-  if (!extent || !(extent.width > 0) || !(extent.height > 0)) return null;
-  const axis = (value) => Math.min(MAX_SAMPLE_AXIS, Math.max(32, Math.ceil(value / 4)));
-  const width = axis(extent.width);
-  const height = axis(extent.height);
-  return { width, height, reduced: extent.width / width > 4.5 || extent.height / height > 4.5 };
-}
-function imageLuminanceRange(url, overlays = [], grid = null, under = null) {
-  const width = grid?.width ?? 32;
-  const height = grid?.height ?? 32;
-  const sizeKey = width === 32 && height === 32 ? "" : `|${width}x${height}`;
-  const backdrop = under?.a >= 1 ? under : null;
-  const cacheKey = `${url}${overlays.length ? `|${overlayKey(overlays)}` : ""}${sizeKey}${backdrop ? `|under:${overlayKey([backdrop])}` : ""}`;
-  if (imageRangeCache.has(cacheKey)) return imageRangeCache.get(cacheKey);
-  const promise = new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    const timer = setTimeout(() => resolve(null), 1500);
-    img.onload = () => {
-      clearTimeout(timer);
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0, width, height);
-        const data = ctx.getImageData(0, 0, width, height).data;
-        let min = Infinity;
-        let max2 = -Infinity;
-        let minColor = null;
-        let maxColor = null;
-        let opaquePixels = 0;
-        let alphaSeen = false;
-        for (let i = 0; i < data.length; i += 4) {
-          if (data[i + 3] < 255 && !backdrop) alphaSeen = true;
-          if (data[i + 3] > 0) opaquePixels += 1;
-          if (data[i + 3] === 0 && !backdrop) continue;
-          const pixel = { r: data[i], g: data[i + 1], b: data[i + 2], a: data[i + 3] / 255 };
-          const painted = backdrop ? composite(pixel, backdrop) : { ...pixel, a: 1 };
-          const shown = overlays.length ? applyOverlays(painted, overlays) : painted;
-          const l = luminance(shown);
-          if (l < min) {
-            min = l;
-            minColor = shown;
-          }
-          if (l > max2) {
-            max2 = l;
-            maxColor = shown;
-          }
-        }
-        if (!opaquePixels) {
-          transparentImages.add(url);
-          backgroundCache = /* @__PURE__ */ new WeakMap();
-          resolve({ transparent: true, width: img.naturalWidth, height: img.naturalHeight });
-          return;
-        }
-        const reduced = Boolean(grid?.reduced) && (img.naturalWidth > width || img.naturalHeight > height);
-        resolve(min <= max2 ? { min, max: max2, minColor, maxColor, hasAlpha: alphaSeen, width: img.naturalWidth, height: img.naturalHeight, reduced } : null);
-      } catch {
-        resolve(null);
-      }
-    };
-    img.onerror = () => {
-      clearTimeout(timer);
-      resolve(null);
-    };
-    img.src = url;
-  });
-  imageRangeCache.set(cacheKey, promise);
-  return promise;
-}
-function backgroundImagePaintRects(element) {
-  const style = getComputedStyle(element);
-  const images = splitLayers(style.backgroundImage);
-  if (!images.length) return [];
-  const box = element.getBoundingClientRect();
-  const sizes = splitLayers(style.backgroundSize);
-  const positions = splitLayers(style.backgroundPosition);
-  const repeats = splitLayers(style.backgroundRepeat);
-  const per = (list2, i) => list2.length ? list2[i % list2.length] : void 0;
-  return images.map((image, i) => {
-    if (image === "none") return { left: 0, top: 0, right: 0, bottom: 0 };
-    const repeat = per(repeats, i) ?? "repeat";
-    if (repeat !== "no-repeat") return null;
-    const size = per(sizes, i) ?? "auto";
-    if (size === "cover" || size === "contain") return null;
-    const parts = splitParts(size);
-    const extent = (value, total) => {
-      if (value?.endsWith("px")) return parseFloat(value);
-      if (value?.endsWith("%")) return parseFloat(value) / 100 * total;
-      return null;
-    };
-    const width = extent(parts[0], box.width);
-    const height = extent(parts[1] ?? parts[0], box.height);
-    if (width === null || height === null || Number.isNaN(width) || Number.isNaN(height)) return null;
-    const pos = splitParts(per(positions, i) ?? "0% 0%");
-    const offset = (value, total, span) => {
-      if (value?.endsWith("%")) return parseFloat(value) / 100 * (total - span);
-      if (value?.endsWith("px")) return parseFloat(value);
-      return null;
-    };
-    const offsetX = offset(pos[0], box.width, width);
-    const offsetY = offset(pos[1] ?? "50%", box.height, height);
-    if (offsetX === null || offsetY === null || Number.isNaN(offsetX) || Number.isNaN(offsetY)) return null;
-    const left = box.left + offsetX;
-    const top = box.top + offsetY;
-    return { left, top, right: left + width, bottom: top + height };
-  });
-}
-function splitParts(value) {
-  const out = [];
-  let depth = 0;
-  let current = "";
-  for (const ch of value) {
-    if (ch === "(") depth += 1;
-    if (ch === ")") depth -= 1;
-    if (/\s/.test(ch) && depth === 0) {
-      if (current) out.push(current);
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  if (current) out.push(current);
-  return out;
-}
-function splitLayers(value) {
-  if (!value || value === "none") return value === "none" ? ["none"] : [];
-  const out = [];
-  let depth = 0;
-  let current = "";
-  for (const ch of value) {
-    if (ch === "(") depth += 1;
-    if (ch === ")") depth -= 1;
-    if (ch === "," && depth === 0) {
-      out.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  if (current.trim()) out.push(current.trim());
-  return out;
-}
-function backgroundImagePaintRect(element, intrinsic) {
-  const style = getComputedStyle(element);
-  if (splitLayers(style.backgroundImage).filter((layer) => layer !== "none").length !== 1) return null;
-  const box = element.getBoundingClientRect();
-  return imagePaintRectInBox(
-    { left: box.left, top: box.top, right: box.right, bottom: box.bottom },
-    { repeat: style.backgroundRepeat, size: style.backgroundSize, position: style.backgroundPosition },
-    intrinsic
-  );
-}
-function imagePaintRectInBox(box, meta2, intrinsic) {
-  if (!box || !meta2) return null;
-  if (meta2.repeat !== "no-repeat") return null;
-  if (meta2.size === "cover" || meta2.size === "contain") return null;
-  const boxWidth = box.right - box.left;
-  const boxHeight = box.bottom - box.top;
-  const dimension = (value, total, auto) => {
-    if (value?.endsWith("px")) return parseFloat(value);
-    if (value?.endsWith("%")) return parseFloat(value) / 100 * total;
-    return auto;
-  };
-  const size = meta2.size.split(" ");
-  const width = dimension(size[0], boxWidth, intrinsic?.width);
-  const height = dimension(size[1] ?? size[0], boxHeight, intrinsic?.height);
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
-  const offset = (value, total, extent) => {
-    if (value?.endsWith("%")) return parseFloat(value) / 100 * (total - extent);
-    if (value?.endsWith("px")) return parseFloat(value);
-    return null;
-  };
-  const pos = meta2.position.split(" ");
-  const offsetX = offset(pos[0], boxWidth, width);
-  const offsetY = offset(pos[1] ?? "50%", boxHeight, height);
-  if (offsetX === null || offsetY === null || Number.isNaN(offsetX) || Number.isNaN(offsetY)) return null;
-  const left = box.left + offsetX;
-  const top = box.top + offsetY;
-  return { left, top, right: left + width, bottom: top + height };
-}
-function rangeWithBackdrop(range, under, overlays = []) {
-  if (!range || !range.hasAlpha) return range;
-  if (!under || under.a < 1) return null;
-  const shown = overlays.length ? applyOverlays(under, overlays) : under;
-  const underLum = luminance(shown);
-  return {
-    ...range,
-    min: Math.min(range.min, underLum),
-    max: Math.max(range.max, underLum),
-    minColor: underLum < range.min ? shown : range.minColor,
-    maxColor: underLum > range.max ? shown : range.maxColor
-  };
-}
-function splitBackgroundLayers(backgroundImageCss) {
-  return splitLayers(backgroundImageCss);
-}
-function backgroundLayerUrl(layer) {
-  const match = /^url\(([\s\S]*)\)$/.exec((layer ?? "").trim());
-  if (!match) return null;
-  let inner = match[1].trim();
-  const quote = inner[0];
-  if ((quote === '"' || quote === "'") && inner.endsWith(quote)) {
-    inner = inner.slice(1, -1).replace(new RegExp(`\\\\${quote}`, "g"), quote);
-  }
-  return inner;
-}
-var GRADIENT_NON_COLOR = /^(?:(?:to|at|from|in|circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner)\b|calc\(|-?\d|\.\d)/i;
-function gradientStops(layer) {
-  const result = { colors: [], unparsed: 0, translucent: false, space: null };
-  const open = layer.indexOf("(");
-  const close = layer.lastIndexOf(")");
-  if (open === -1 || close <= open) return result;
-  for (const part of splitLayers(layer.slice(open + 1, close))) {
-    const space = /(?:^|\s)in\s+([a-z0-9-]+)/i.exec(part);
-    if (space && space[1].toLowerCase() !== "srgb") result.space = space[1].toLowerCase();
-    let token = null;
-    const call = /([a-z][a-z0-9-]*)\(/i.exec(part);
-    if (call) {
-      let depth = 0;
-      for (let i = call.index; i < part.length; i++) {
-        if (part[i] === "(") depth += 1;
-        if (part[i] === ")") {
-          depth -= 1;
-          if (depth === 0) {
-            token = part.slice(call.index, i + 1);
-            break;
-          }
-        }
-      }
-    } else {
-      token = part.trim().split(/\s+/)[0] ?? "";
-    }
-    if (!token || GRADIENT_NON_COLOR.test(token)) continue;
-    const color = /^currentcolor$/i.test(token) ? null : parseColor(token);
-    if (!color) {
-      result.unparsed += 1;
-      continue;
-    }
-    if (color.a < 1) result.translucent = true;
-    result.colors.push(color);
-  }
-  return result;
-}
-function sampledGradientRange(layer, overlays = [], steps = 16) {
-  const { colors, unparsed, translucent, space } = gradientStops(layer);
-  if (!colors.length || unparsed || translucent || space) return null;
-  const samples = [];
-  if (colors.length === 1) samples.push(colors[0]);
-  for (let i = 0; i + 1 < colors.length; i++) {
-    const from = colors[i];
-    const to = colors[i + 1];
-    for (let s = 0; s <= steps; s++) {
-      const t = s / steps;
-      samples.push({
-        r: from.r + (to.r - from.r) * t,
-        g: from.g + (to.g - from.g) * t,
-        b: from.b + (to.b - from.b) * t,
-        a: 1
-      });
-    }
-  }
-  const composited = samples.map((sample) => overlays.length ? applyOverlays(sample, overlays) : sample);
-  let min = Infinity;
-  let max2 = -Infinity;
-  let minColor = null;
-  let maxColor = null;
-  for (const sample of composited) {
-    const l = luminance(sample);
-    if (l < min) {
-      min = l;
-      minColor = sample;
-    }
-    if (l > max2) {
-      max2 = l;
-      maxColor = sample;
-    }
-  }
-  return { min, max: max2, minColor, maxColor, sampled: true };
-}
-function ratioFromLuminance(l1, l2) {
-  const [lighter, darker] = l1 > l2 ? [l1, l2] : [l2, l1];
-  return (lighter + 0.05) / (darker + 0.05);
-}
-function rangeVerdict(foreground, range, required) {
-  const textLum = luminance(foreground);
-  const inside = textLum >= range.min && textLum <= range.max;
-  const worst = inside ? 1 : Math.min(ratioFromLuminance(textLum, range.min), ratioFromLuminance(textLum, range.max));
-  const best = Math.max(ratioFromLuminance(textLum, range.min), ratioFromLuminance(textLum, range.max));
-  if (worst >= required) return { verdict: "pass", worst, best };
-  if (best < required) return { verdict: "fail", worst, best };
-  return { verdict: "mixed", worst, best };
-}
-function rootHasFirstLineRules(root) {
-  let has = firstLineRulesCache.get(root);
-  if (has !== void 0) return has;
-  has = false;
-  const scan = (rules) => {
-    for (const rule of rules) {
-      if (rule.selectorText && /::?first-(?:line|letter)\b/.test(rule.selectorText)) return true;
-      const inner = rule.cssRules ?? rule.styleSheet?.cssRules;
-      if (inner && scan(inner)) return true;
-    }
-    return false;
-  };
-  const sheets = [...root.styleSheets ?? [], ...root.adoptedStyleSheets ?? []];
-  for (const sheet of sheets) {
-    try {
-      if (scan(sheet.cssRules)) {
-        has = true;
-        break;
-      }
-    } catch {
-      has = true;
-      break;
-    }
-  }
-  firstLineRulesCache.set(root, has);
-  return has;
-}
-function pseudoTextColors(element, style) {
-  if (style.display === "inline" || style.display === "contents") return [];
-  if (!rootHasFirstLineRules(element.getRootNode())) return [];
-  const paintedColor = (s) => s.webkitTextFillColor && s.webkitTextFillColor !== s.color ? s.webkitTextFillColor : s.color;
-  const base = paintedColor(style);
-  const found = [];
-  for (const pseudo of ["::first-line", "::first-letter"]) {
-    const pseudoStyle = getComputedStyle(element, pseudo);
-    const css = paintedColor(pseudoStyle);
-    if (!css || css === base) continue;
-    const color = parseColor(css);
-    if (color) found.push({ pseudo, color, style: pseudoStyle });
-  }
-  return found;
-}
-var BOLD_WEIGHT = 600;
-function isLargeText(style) {
-  const size = parseFloat(style.fontSize);
-  const weight = parseInt(style.fontWeight, 10) || 400;
-  return size >= 24 || size >= 56 / 3 && weight >= BOLD_WEIGHT;
-}
-
 // src/engine/rules/wcag/1.4.3-color-contrast.js
 var firstLayerUrl = (css) => splitBackgroundLayers(css ?? "").map(backgroundLayerUrl).find(Boolean) ?? null;
 var extentOf = (rect) => rect ? { width: rect.right - rect.left, height: rect.bottom - rect.top } : null;
@@ -3482,7 +3606,7 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
         if (ownPaint && ownPaint.a >= 1) return null;
         const box = element.getBoundingClientRect();
         const near = (r) => Math.min(box.right, r.right) - Math.max(box.left, r.left) >= 3 && Math.min(box.bottom, r.bottom) - Math.max(box.top, r.top) >= 3;
-        const overMedia = mediaRects(doc).some(({ element: media, rect: mediaRect, hitTestBlind }) => (!blindOnly || hitTestBlind) && near(mediaRect) && !media.contains(element) && !element.contains(media) && textIntersects(element, mediaRect));
+        const overMedia = mediaRects(doc).some(({ element: media, rect: mediaRect, hitTestBlind }) => (!blindOnly || hitTestBlind) && near(mediaRect) && !media.contains(element) && !element.contains(media) && textIntersects(element, mediaRect) && !beneathOpaqueAncestor(element, media));
         if (overMedia) {
           return {
             status: "incomplete",
@@ -4445,11 +4569,11 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
       const nearbyCandidates = (i, box = rects[i]) => {
         const keys = cellsOf(box);
         if (!keys) return elements.map((_, j) => j).filter((j) => j !== i && laidOut[j]);
-        const seen2 = new Set(wideTargets.filter((j) => j !== i));
+        const seen3 = new Set(wideTargets.filter((j) => j !== i));
         for (const key of keys) {
-          for (const j of cellIndex.get(key) ?? []) if (j !== i) seen2.add(j);
+          for (const j of cellIndex.get(key) ?? []) if (j !== i) seen3.add(j);
         }
-        return seen2;
+        return seen3;
       };
       const obscuredRects = /* @__PURE__ */ new Map();
       const calculateObscuredRect = (i) => {
@@ -5769,10 +5893,10 @@ var roleOf = effectiveRole;
 function composedDescendants(element) {
   const found = [];
   const pending = [element];
-  const seen2 = /* @__PURE__ */ new Set();
+  const seen3 = /* @__PURE__ */ new Set();
   const enter = (el) => {
-    if (seen2.has(el)) return;
-    seen2.add(el);
+    if (seen3.has(el)) return;
+    seen3.add(el);
     found.push(el);
     if (el.shadowRoot) pending.push(el.shadowRoot);
     if (el.tagName === "SLOT") for (const assigned of el.assignedElements({ flatten: true })) {
@@ -6845,14 +6969,14 @@ var redundant_entry_default = {
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/redundant-entry.html",
   selector: "form",
   evaluate(element, { isVisible }) {
-    const seen2 = /* @__PURE__ */ new Map();
+    const seen3 = /* @__PURE__ */ new Map();
     for (const field of element.querySelectorAll("input[autocomplete], select[autocomplete], textarea[autocomplete]")) {
       if (field.disabled || field.readOnly) continue;
       if (!isVisible(field)) continue;
       if (field instanceof HTMLInputElement && (field.type === "hidden" || field.type === "password")) continue;
       const purpose = (field.getAttribute("autocomplete") || "").trim().toLowerCase().replace(/\s+/g, " ");
       if (!purpose || EXEMPT.has(purpose)) continue;
-      if (seen2.has(purpose)) {
+      if (seen3.has(purpose)) {
         return {
           status: "incomplete",
           message: `This form asks for "${purpose}" twice \u2014 3.3.7 says information the user already entered must be auto-populated or selectable, not typed again. A deliberate confirmation field can be essential (the criterion's own escape); that judgement is yours.`,
@@ -6860,7 +6984,7 @@ var redundant_entry_default = {
           data: { purpose }
         };
       }
-      seen2.set(purpose, field);
+      seen3.set(purpose, field);
     }
     return { status: "pass" };
   }
@@ -6953,9 +7077,9 @@ function rulesAnimate(doc, rule) {
   } catch {
     return false;
   }
-  let seen2 = 0;
+  let seen3 = 0;
   for (const subject of subjects) {
-    if (seen2++ >= 5) break;
+    if (seen3++ >= 5) break;
     const style = doc.defaultView.getComputedStyle(subject);
     const durations = style.transitionDuration.split(",").map((d) => parseFloat(d) || 0);
     if (!durations.some((d) => d > 0)) continue;
@@ -8681,13 +8805,13 @@ function medianOf(counts, total) {
   if (!total) return 0;
   const keys = [...counts.keys()].sort((a, b) => a - b);
   const mid = (total - 1) / 2;
-  let seen2 = 0;
+  let seen3 = 0;
   let lower = null;
   for (const k of keys) {
     const c = counts.get(k);
-    if (lower === null && seen2 + c > Math.floor(mid)) lower = k;
-    if (seen2 + c > mid) return lower === null ? k : Number.isInteger(mid) ? k : (lower + k) / 2;
-    seen2 += c;
+    if (lower === null && seen3 + c > Math.floor(mid)) lower = k;
+    if (seen3 + c > mid) return lower === null ? k : Number.isInteger(mid) ? k : (lower + k) / 2;
+    seen3 += c;
   }
   return keys.at(-1) ?? 0;
 }
@@ -9136,8 +9260,8 @@ function commonSections(s, what = "pages", engine = "the engine") {
         is the average over all ${int(n)} ${what}, including the ones that passed.
       </p>
       ${(() => {
-    const seen2 = topSix.filter((e) => WHO[e.id]);
-    return seen2.length ? `<p>Behind each rule is a person locked out:</p><ul class="who">${seen2.map((e) => `<li><strong>${escapeHtml(WHO[e.id][0])}</strong>${escapeHtml(WHO[e.id][1])}</li>`).join("")}</ul>` : "";
+    const seen3 = topSix.filter((e) => WHO[e.id]);
+    return seen3.length ? `<p>Behind each rule is a person locked out:</p><ul class="who">${seen3.map((e) => `<li><strong>${escapeHtml(WHO[e.id][0])}</strong>${escapeHtml(WHO[e.id][1])}</li>`).join("")}</ul>` : "";
   })()}
       ${(() => {
     const common = s.rules.filter((e) => e.pagesPct >= 1);
@@ -10219,8 +10343,8 @@ async function render(runDir2, { publicCopy = true } = {}) {
           each rule fails on. Elements per page is the average over all ${int(s.pages)} pages, including the ones that passed.
         </p>
         ${(() => {
-        const seen2 = topSix.filter((e) => WHO[e.id]);
-        return seen2.length ? `<p>Behind each rule is a person locked out:</p><ul class="who">${seen2.map((e) => `<li><strong>${escapeHtml(WHO[e.id][0])}</strong>${escapeHtml(WHO[e.id][1])}</li>`).join("")}</ul>` : "";
+        const seen3 = topSix.filter((e) => WHO[e.id]);
+        return seen3.length ? `<p>Behind each rule is a person locked out:</p><ul class="who">${seen3.map((e) => `<li><strong>${escapeHtml(WHO[e.id][0])}</strong>${escapeHtml(WHO[e.id][1])}</li>`).join("")}</ul>` : "";
       })()}
         ${common.length ? table([["Rule", false], ["Criterion", false], ["Pages", true], ["Share of pages", true], ["Elements per page", true], ["Elements", true]], common.map((e) => ruleRow(e, true)).join(""), { label: "Failures by rule, on at least one page in a hundred", compact: common.length > 12 }) : ""}
         ${rare.length ? disclosure(rare.length, `The rule${rare.length === 1 ? "" : "s"} that failed on fewer than one page in a hundred`, table([["Rule", false], ["Criterion", false], ["Pages", true], ["Elements", true]], rare.map((e) => ruleRow(e, false)).join(""), { compact: true, label: "Failures by rule, on fewer than one page in a hundred" })) : ""}
@@ -10767,25 +10891,25 @@ if (prior?.list && listMeta && prior.list.source && prior.list.source !== listMe
 }
 var queue = [];
 var retryQueue = [];
-var seen = /* @__PURE__ */ new Set();
+var seen2 = /* @__PURE__ */ new Set();
 var cursor = 0;
 var recheckTotal = 0;
 if (isSite) {
   if (recheck) {
     for (const row of done.values()) if (row.status !== "audited" && recheckable(row) && !neverResolves(row) && (!row.rechecked || hasFlag("--again"))) queue.push({ url: row.url, depth: row.depth ?? 0, from: row.from ?? null });
-    for (const row of done.values()) seen.add(row.url);
+    for (const row of done.values()) seen2.add(row.url);
     recheckTotal = queue.length;
   } else {
-    for (const row of done.values()) seen.add(row.url);
+    for (const row of done.values()) seen2.add(row.url);
     if (!renderOnly) {
-      for (const row of done.values()) for (const link of row.links ?? []) if (!seen.has(link)) {
-        seen.add(link);
+      for (const row of done.values()) for (const link of row.links ?? []) if (!seen2.has(link)) {
+        seen2.add(link);
         queue.push({ url: link, depth: (row.depth ?? 0) + 1, from: row.url });
       }
     }
     if (!done.size) {
       const first = normalise(startUrl.toString(), startUrl) ?? startUrl.toString();
-      seen.add(first);
+      seen2.add(first);
       queue.push({ url: first, depth: 0, from: null });
     }
   }
@@ -11181,7 +11305,7 @@ function writeStatus(extra = {}, force = false) {
     skipped,
     tagged: tally.tagged,
     finished: done.size,
-    discovered: isSite ? renderOnly ? prior?.discovered ?? seen.size : seen.size : null,
+    discovered: isSite ? renderOnly ? prior?.discovered ?? seen2.size : seen2.size : null,
     queued: isSite ? renderOnly ? prior?.queued ?? 0 : queue.length : null,
     cursorRank: list ? list[Math.min(cursor, list.length - 1)]?.rank ?? null : null,
     recheck,
@@ -11235,8 +11359,8 @@ function record(row) {
     if (why) newTags.set(row.domain, why);
   }
   if (isSite && !recheck && row.depth < maxDepth) for (const link of row.links ?? []) {
-    if (seen.has(link)) continue;
-    seen.add(link);
+    if (seen2.has(link)) continue;
+    seen2.add(link);
     if (!robotsAllows(new URL(link))) {
       const r = { url: link, depth: row.depth + 1, from: row.url, status: "skipped", reason: "robots", links: [], finishedAt: Date.now() };
       done.set(link, r);
