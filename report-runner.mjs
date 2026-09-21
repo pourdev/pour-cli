@@ -279,13 +279,13 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.130",
-  // Release: every prevalence figure re-checked against its source (glaucoma ~3% over 40, macular degeneration ~9% over 45, Uncorrected Focus ~5-6% uncorrected, Resting Tremor ~0.2%, the dyslexia figure reworded and off Contrast Sensitivity); Drifting Shadows (floaters) removed; pour-cli 0.3.21. Engine unchanged at 1.43.0. Was 1.2.129.
+  version: "1.2.131",
+  // Release: engine 1.44.0. An invalid lang on a page part fails only through words that inherit it; the label of a switched-off control is exempt from contrast with it; a lone icon glyph in a named control, an icon-font glyph and colour emoji go to review where a script cannot say which criterion applies (under 3:1 on the face of a control still fails); a pseudo-element cut to a shape by a mask or clip-path is no longer taken as the text's backdrop. pour-cli 0.3.22, editor 0.2.26. Was 1.2.130.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
-    version: "1.43.0"
-    // Unsupported ARIA attributes are minor violations (ARIA 1.2 §8.6); a state the element provably has and cannot expose is the new aria-state-unreachable rule at moderate; form-control contrast findings carry their colour pair.
+    version: "1.44.0"
+    // valid-lang-parts judges a lang only where words inherit it (name and description included); contrast exempts the label of an inactive control, sends glyphs that are not words to review with a 3:1 floor on the face of a control, and treats a masked or clipped pseudo-element over text as paint of unknown extent. From four pull requests by Jeff Witt and the release gate. Was 1.43.0.
   },
   extension: {
     // Appended to productName for the manifest name, which IS the store
@@ -516,6 +516,56 @@ var html_lang_default = {
 
 // src/engine/rules/wcag/3.1.2-valid-lang-parts.js
 var LANG_PATTERN2 = /^([a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*|[xXiI](-[a-zA-Z0-9]{1,8})+)$/;
+var SPOKEN_ATTRIBUTES = [
+  "aria-label",
+  "aria-description",
+  "aria-placeholder",
+  "aria-valuetext",
+  "aria-roledescription",
+  "title",
+  "placeholder"
+];
+var WORDED_INPUT_TYPES = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "button", "submit", "reset"]);
+var spoken = (node, name) => Boolean(node.getAttribute(name)?.trim());
+function ownWords(node) {
+  if (SPOKEN_ATTRIBUTES.some((name) => spoken(node, name))) return true;
+  if (node.matches('img, area, input[type="image"]') && spoken(node, "alt")) return true;
+  if (node.matches("option, optgroup, track") && spoken(node, "label")) return true;
+  if (node.tagName === "INPUT") {
+    const type = (node.getAttribute("type") ?? "").trim().toLowerCase();
+    if (type === "submit" || type === "reset") return true;
+    if (WORDED_INPUT_TYPES.has(type) && spoken(node, "value")) return true;
+  }
+  if (node.matches("iframe, frame, object, embed")) return true;
+  for (const pseudo of ["::before", "::after"]) {
+    const content = getComputedStyle(node, pseudo).content;
+    if (/"[^"]*\S[^"]*"/.test(content)) return true;
+  }
+  return false;
+}
+function governsText(element) {
+  const stack = [element];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node !== element && spoken(node, "lang")) continue;
+    if (node.matches("script, style, noscript, template")) continue;
+    const style = getComputedStyle(node);
+    if (style.display === "none") continue;
+    const shown = style.visibility !== "hidden" && style.visibility !== "collapse";
+    if (shown && ownWords(node)) return true;
+    let children = node.childNodes;
+    if (node.tagName === "SLOT") {
+      const assigned = node.assignedNodes?.() ?? [];
+      if (assigned.length) children = assigned;
+    } else if (node.shadowRoot) children = node.shadowRoot.childNodes;
+    for (const child of children) {
+      if (child.nodeType === 3) {
+        if (shown && /\S/.test(child.textContent)) return true;
+      } else if (child.nodeType === 1) stack.push(child);
+    }
+  }
+  return false;
+}
 var valid_lang_parts_default = {
   id: "valid-lang-parts",
   name: "Part language tags",
@@ -527,6 +577,7 @@ var valid_lang_parts_default = {
   evaluate(element) {
     const lang = element.getAttribute("lang").trim();
     if (lang === "" || LANG_PATTERN2.test(lang)) return { status: "pass" };
+    if (!governsText(element)) return { status: "pass" };
     return {
       status: "fail",
       message: `lang="${lang}" is not a valid language tag, so screen readers may switch to the wrong pronunciation.`,
@@ -1693,7 +1744,25 @@ var firstLineRulesCache = /* @__PURE__ */ new WeakMap();
 var chainEffectCache = /* @__PURE__ */ new WeakMap();
 var uncoveredEffectCache = /* @__PURE__ */ new WeakMap();
 var blendBackdropCache = /* @__PURE__ */ new WeakMap();
+var labelReferrersCache = /* @__PURE__ */ new WeakMap();
 var HAS_IMAGE = Symbol("background-image in chain");
+function labelReferrers(root, isInactive) {
+  let referrers = labelReferrersCache.get(root);
+  if (!referrers) {
+    referrers = /* @__PURE__ */ new Map();
+    for (const referrer of root.querySelectorAll("[aria-labelledby]")) {
+      const inactive = isInactive(referrer);
+      for (const id of referrer.getAttribute("aria-labelledby").split(/\s+/)) {
+        if (!id) continue;
+        const count2 = referrers.get(id) ?? { inactive: 0, other: 0 };
+        count2[inactive ? "inactive" : "other"] += 1;
+        referrers.set(id, count2);
+      }
+    }
+    labelReferrersCache.set(root, referrers);
+  }
+  return referrers;
+}
 var flatParentOf = (node) => node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host ?? null;
 function colourChangingFilter(filter) {
   if (!filter || filter === "none") return false;
@@ -2038,6 +2107,12 @@ function pseudoLayers(host2) {
       continue;
     }
     if (rect.empty) continue;
+    const mask = style.maskImage || style.webkitMaskImage;
+    if (mask && mask !== "none" || style.clipPath && style.clipPath !== "none") {
+      const alphaBound = Math.min(1, opacityFactor * (style.backgroundImage !== "none" ? 1 : color.a));
+      if (alphaBound > 0) layers.push({ rect, shaped: alphaBound });
+      continue;
+    }
     let layerColor = color;
     if (layerColor && opacityFactor < 1) layerColor = { ...layerColor, a: layerColor.a * opacityFactor };
     const imageCss = style.backgroundImage !== "none" ? style.backgroundImage : null;
@@ -2054,6 +2129,7 @@ function pseudoBackdropForText(element) {
   let image = null;
   let settled = false;
   let film = 0;
+  let shaped = false;
   let crossed = false;
   let beyondPaint = false;
   for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
@@ -2066,6 +2142,11 @@ function pseudoBackdropForText(element) {
       if (settled) continue;
       const { rect, color, imageCss } = layer;
       if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) continue;
+      if (layer.shaped) {
+        film = 1 - (1 - film) * (1 - layer.shaped);
+        shaped = true;
+        continue;
+      }
       if (imageCss) {
         image = { css: imageCss, element: node, box: rect, meta: layer.imageMeta };
         settled = true;
@@ -2082,9 +2163,10 @@ function pseudoBackdropForText(element) {
       if (style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage) || (parseColor(style.backgroundColor)?.a ?? 0) >= 1) crossed = true;
     }
   }
-  if (image) return { image, ...film > 0 && { film }, ...beyondPaint && { beyondPaint } };
-  if (acc) return { color: acc, ...film > 0 && { film }, ...beyondPaint && { beyondPaint } };
-  return film > 0 ? { film } : null;
+  const filmed = film > 0 && { film, ...shaped && { shaped } };
+  if (image) return { image, ...filmed, ...beyondPaint && { beyondPaint } };
+  if (acc) return { color: acc, ...filmed, ...beyondPaint && { beyondPaint } };
+  return filmed || null;
 }
 function filmedContrastBounds(foreground, background, film) {
   const ratios = [contrastRatio(foreground, background)];
@@ -2694,6 +2776,51 @@ function inactiveComponentText(element) {
   const ariaDisabled = element.closest('[aria-disabled="true"]');
   return Boolean(ariaDisabled && ariaDisabled.matches(ARIA_DISABLED_HOSTS));
 }
+function inactiveWidget(widget) {
+  if (widget.matches('fieldset, optgroup, [role="group"], [role="toolbar"], [role="application"]')) return false;
+  if (widget.matches(":disabled")) return true;
+  const ariaDisabled = widget.closest('[aria-disabled="true"]');
+  return Boolean(ariaDisabled && ariaDisabled.matches(ARIA_DISABLED_HOSTS));
+}
+var MORE_THAN_A_LABEL = "p, div, ul, ol, dl, table, section, article, aside, nav, header, footer, form, h1, h2, h3, h4, h5, h6, a[href], button, input, select, textarea";
+function labelsInactiveComponent(element) {
+  const referrers = labelReferrers(element.getRootNode(), inactiveWidget);
+  const sharedWithLive = (node) => Boolean(node.id && referrers.get(node.id)?.other);
+  const label2 = element.closest("label");
+  if (label2?.control && inactiveWidget(label2.control) && !sharedWithLive(label2)) return true;
+  if (!referrers.size) return false;
+  for (let node = element; node; node = node.parentElement) {
+    const count2 = node.id && referrers.get(node.id);
+    if (!count2 || !count2.inactive || count2.other) continue;
+    if (node === element || !node.querySelector(MORE_THAN_A_LABEL)) return true;
+  }
+  return false;
+}
+function graphemes(text) {
+  if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
+    return [...new Intl.Segmenter(void 0, { granularity: "grapheme" }).segment(text)].map((part) => part.segment);
+  }
+  return [...text];
+}
+var drawnInColour = (grapheme) => new RegExp("\\p{Emoji_Presentation}", "u").test(grapheme) || grapheme.includes("\uFE0F") && new RegExp("\\p{Emoji}", "u").test(grapheme);
+var ICON_HOSTS = 'button, a[href], summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"]';
+function glyphNotWords(element, text, accessibleName2) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const parts = graphemes(trimmed).filter((part) => /\S/.test(part));
+  if (parts.every(drawnInColour)) return { emoji: true, what: "this text is emoji, which the browser draws in its own colours whatever the text colour is" };
+  const host2 = element.closest(ICON_HOSTS);
+  const faceOfControl = Boolean(host2 && host2.textContent.trim() === trimmed);
+  if (/^[\p{Co}\s]+$/u.test(trimmed)) {
+    return { faceOfControl, what: "this text is an icon-font glyph (a private-use character), not words" };
+  }
+  if (parts.length !== 1 || !faceOfControl) return null;
+  if (!new RegExp("^(\\p{Script=Latin}|[^\\p{L}\\p{N}])", "u").test(trimmed)) return null;
+  if (!host2.hasAttribute("aria-label") && !host2.hasAttribute("aria-labelledby")) return null;
+  const name = accessibleName2(host2);
+  if (!name || name.toLowerCase().includes(trimmed.toLowerCase())) return null;
+  return { faceOfControl, what: `the single character "${trimmed}" stands in for an icon: the ${host2.tagName.toLowerCase()} is named "${name}", which does not contain it` };
+}
 function unreachableControl(control) {
   if (control.matches(':disabled, [aria-disabled="true"], [tabindex="-1"]')) return true;
   if (control.closest("[inert]")) return true;
@@ -2982,7 +3109,7 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
     // contrast is seen by sighted users even in aria-hidden content
     async evaluate(element, { ownText }) {
       if (!ownText(element)) return { status: "pass" };
-      if (inactiveComponentText(element)) return { status: "pass" };
+      if (inactiveComponentText(element) || labelsInactiveComponent(element)) return { status: "pass" };
       let styleSource = element;
       if (element.shadowRoot) {
         const ownTextNode = [...element.childNodes].find((node) => node.nodeType === 3 && node.textContent.trim());
@@ -3237,7 +3364,7 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
       }
       const filmIncomplete = {
         status: "incomplete",
-        message: "A pseudo-element with its own background paints in this element's chain, but its position can't be computed \u2014 so whether it sits behind this text is unknown. Check the contrast by eye."
+        message: pseudoResolved?.shaped ? "A pseudo-element with its own background covers this text, but a mask or clip-path cuts it down to a shape, so how much of it paints over or behind the text can't be computed. Check the contrast by eye." : "A pseudo-element with its own background paints in this element's chain, but its position can't be computed \u2014 so whether it sits behind this text is unknown. Check the contrast by eye."
       };
       if (film > 0 && (pseudoBack?.image || painted?.image || painted === "unresolved" || veilPaint || style.textShadow && style.textShadow !== "none")) {
         return filmIncomplete;
@@ -3509,7 +3636,20 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
   const judge = rule.evaluate.bind(rule);
   rule.evaluate = async (element, helpers) => {
     const verdict = await judge(element, helpers);
-    if (verdict.status === "fail" && element.closest('[aria-hidden="true"]')) {
+    if (verdict.status !== "fail") return verdict;
+    const glyph = glyphNotWords(element, helpers.ownText(element), helpers.accessibleName);
+    if (glyph) {
+      const ratio = verdict.data?.ratio;
+      if (!glyph.emoji && glyph.faceOfControl && ratio < 3) {
+        verdict.message += " Read as an icon and not as text, it still falls short: 1.4.11 asks 3:1 of what identifies a control.";
+      } else {
+        return {
+          status: "incomplete",
+          message: glyph.emoji ? `The text colour misses the contrast minimum, but ${glyph.what}, so that ratio does not describe what is seen. If the emoji carries meaning, judge it by eye against 1.4.11 non-text contrast (3:1).` : `Contrast is ${ratio ? `${ratio}:1, below the ${verdict.data.required}:1 minimum for text` : "below the minimum for text"}, but ${glyph.what}. 1.4.3 covers text in a human language; a glyph that works as a graphic is judged under 1.4.11 non-text contrast (3:1) where it is needed to understand the content. Decide by eye which this is.`
+        };
+      }
+    }
+    if (element.closest('[aria-hidden="true"]')) {
       verdict.message += " aria-hidden hides this from screen readers, not from sighted users; contrast is judged for the people who see it.";
     }
     return verdict;
