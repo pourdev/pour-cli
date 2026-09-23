@@ -279,13 +279,13 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.133",
-  // Release: engine 1.44.2. The page language rule passes a document that holds no words, so a placeholder about:blank frame is no longer reported for a language it has nothing in, and the fix line for an unsupported ARIA attribute names the repair for that attribute. pour-cli 0.3.24, editor 0.2.28. Was 1.2.132.
+  version: "1.2.134",
+  // Release: engine 1.45.0. A WCAG 3 draft mode: the 10 September 2026 Working Draft's Bronze, Silver and Gold tiers beside WCAG 2, which stays the default, in the extension, bookmarklet, command line, MCP tool and editor; the highlight card on Show. pour-cli 0.3.25, editor 0.2.29. Was 1.2.133.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
-    version: "1.44.2"
-    // html-lang passes a wordless document (no title text, no body text, no body element beyond scripts and metadata); aria-allowed-attr's fix line names the repair per attribute. Was 1.44.1.
+    version: "1.45.0"
+    // WCAG 3 draft tier tags (wcag3-bronze, -silver, -gold) select the rules mapped to that tier's draft requirements and stamp the results draft (wcag3.js); WCAG 2 selection unchanged. Also link-in-text-block attaches its colour pair as finding data, and the contrast rules pass their display names. Was 1.44.2.
   },
   extension: {
     // Appended to productName for the manifest name, which IS the store
@@ -3208,7 +3208,7 @@ async function sampledVerdict(source2, foreground, required, doc, overlays = [],
   }
   return verdictFromRange(range, foreground, required, what, Boolean(range?.reduced));
 }
-function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
+function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
   const largeScaleNoteFor = (style, required, ratio) => {
     if (required !== thresholds.normal || ratio < thresholds.large) return "";
     const sizePx = parseFloat(style.fontSize) || 0;
@@ -3229,6 +3229,9 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
   };
   const rule = {
     id,
+    // The display name both callers pass: dropped here until 2026-09-21, so
+    // the UI titled these two rules by their ids.
+    name,
     impact: "serious",
     tags,
     help,
@@ -5778,15 +5781,15 @@ var link_in_text_block_default = {
           fix: "Underline links inside text (text-decoration: underline), or add a non-colour indicator."
         };
       }
-      const backdrop = effectiveBackground(element);
-      if (!backdrop) {
+      const backdrop2 = effectiveBackground(element);
+      if (!backdrop2) {
         return {
           status: "incomplete",
           message: "This link has no underline and its colour is translucent, but the background it composites over could not be determined. Check by eye that something other than colour identifies it as a link.",
           fix: "Underline links inside text (text-decoration: underline), or add a non-colour indicator."
         };
       }
-      const over = (color) => (color.a ?? 1) < 1 ? composite(color, backdrop) : color;
+      const over = (color) => (color.a ?? 1) < 1 ? composite(color, backdrop2) : color;
       linkColor = over(linkColor);
       textColor = over(textColor);
     }
@@ -5796,6 +5799,14 @@ var link_in_text_block_default = {
     }
     const ratio = contrastRatio(linkColor, textColor);
     if (ratio >= 3) return { status: "pass" };
+    const backdrop = effectiveBackground(parent);
+    const data = {
+      link: asRgb(linkColor),
+      surrounding: asRgb(textColor),
+      ...backdrop && (backdrop.a ?? 1) === 1 ? { background: asRgb(backdrop) } : {},
+      ratio: Number(ratio.toFixed(2)),
+      required: 3
+    };
     for (let ancestor = element.parentElement; ancestor && ancestor !== parent; ancestor = ancestor.parentElement) {
       if (!(getComputedStyle(ancestor).textDecorationLine ?? "").includes("underline")) continue;
       if (ancestor.textContent.replace(/\s+/g, "") === element.textContent.replace(/\s+/g, "")) return { status: "pass" };
@@ -5870,7 +5881,8 @@ var link_in_text_block_default = {
       // staying perfectly distinct to most people, including most red-green
       // colour blindness, where the red darkens and the gap widens.
       message: ratio < 1.01 ? "This link has no underline and its colour differs from the surrounding text in hue alone, with no luminance difference: the distinction disappears entirely without colour vision, the exact failure F73 describes." : `This link has no underline and only ${shown}:1 colour difference from the surrounding text, below the 3:1 WCAG technique G183 asks for when colour is the only thing marking a link.`,
-      fix: "Underline links inside text (text-decoration: underline), or add a non-colour indicator."
+      fix: "Underline links inside text (text-decoration: underline), or add a non-colour indicator.",
+      data
     };
   }
 };

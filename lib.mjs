@@ -342,6 +342,7 @@ export function compactResults(results, { maxNodes = 5, detail = 'elements', vie
     rule: r.id,
     impact: r.impact,
     wcag: [...new Set(r.tags.map(toSc).filter(Boolean))],
+    ...(results.standard?.draft ? { wcag3: (r.wcag3 ?? []).map(({ num, name, type }) => `${num} ${name} (${type})`) } : {}),
     help: r.help,
     helpUrl: r.helpUrl,
     elements: r.nodes.length,
@@ -355,6 +356,8 @@ export function compactResults(results, { maxNodes = 5, detail = 'elements', vie
     engine: results.testEngine?.version,
     ...(viewport ? { viewport: `${viewport.width}x${viewport.height}` } : {}),
     durationMs: results.durationMs,
+    // A WCAG 3 draft audit says so before anything else is read.
+    ...(results.standard?.draft ? { standard: `${results.standard.name} ${results.standard.status} ${results.standard.dated}, ${results.standard.tierLabel} tier. ${results.standard.note}` } : {}),
     totals: {
       ...counts,
       review,

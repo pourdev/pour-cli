@@ -21,6 +21,7 @@
 //                                  # loads in; audit numbers are
 //                                  # state-dependent, so this changes them)
 //   pour <url> --bp                # include best-practice rules
+//   pour <url> --wcag3 silver      # a tier of the WCAG 3.0 Working Draft
 //   pour <url> --wait 2000         # extra settle time after load (ms)
 //   pour <url> --exclude ".ads"    # CSS selector to leave out of every rule
 //   pour <url> --fail-on none      # violations (default) | incomplete | none
@@ -97,6 +98,10 @@ One page
   --timeout <ms>       navigation timeout (default 30000)
   --exclude <sel>      CSS selector excluded from every rule
   --bp                 include best-practice rules alongside WCAG A+AA
+  --wcag3 <tier>       bronze | silver | gold: audit against a tier of the
+                       WCAG 3.0 Working Draft instead of WCAG 2.2 A+AA
+                       (an unfinished standard: WCAG 2 rules matched to
+                       draft requirements, not for conformance claims)
   --root <dir>         with a local .html file: the folder served as the site
                        root, for assets addressed from there (/css/site.css);
                        default the file's own folder
@@ -167,8 +172,8 @@ pour check <paths>
   The editor's static lane from the terminal, no browser: HTML, JSX, TSX,
   Vue, Svelte, Angular, Liquid and Nunjucks files, every finding with its
   file, line and column. Values from code and script-built markup are left
-  unjudged and counted. --bp, --fail-on, --level, --max-nodes and --format
-  apply; --no-css skips reading linked local stylesheets.
+  unjudged and counted. --bp, --wcag3, --fail-on, --level, --max-nodes and
+  --format apply; --no-css skips reading linked local stylesheets.
 
 pour mcp
   Serve pour's browser tools to an AI agent over the Model Context Protocol
@@ -320,7 +325,12 @@ if (positional[0] === 'report') {
   if ([settleMs, timeoutMs, maxNodes].some(Number.isNaN)) fail('--wait, --timeout and --max-nodes expect numbers');
   const level = String(flags.get('level') ?? 'max');
   if (!['quiet', 'rules', 'max'].includes(level)) fail(`--level expects quiet | rules | max, got "${level}"`);
-  const tags = flags.has('bp') ? [...WCAG_TAGS, 'best-practice'] : WCAG_TAGS;
+  const wcag3 = flags.has('wcag3') ? String(flags.get('wcag3')).toLowerCase() : null;
+  if (wcag3 && !['bronze', 'silver', 'gold'].includes(wcag3)) fail(`--wcag3 expects bronze | silver | gold, got "${flags.get('wcag3')}"`);
+  const baseTags = wcag3 ? [`wcag3-${wcag3}`] : WCAG_TAGS;
+  const tags = flags.has('bp') ? [...baseTags, 'best-practice'] : baseTags;
+  const scopeLabel = (wcag3 ? `WCAG 3.0 draft, ${wcag3[0].toUpperCase()}${wcag3.slice(1)} tier` : 'WCAG 2.2 A+AA')
+    + (flags.has('bp') ? ' + best practices' : '');
   const format = String(flags.get('format') ?? (flags.has('json') ? 'json' : 'terminal'));
   if (!['terminal', 'json', 'markdown'].includes(format)) fail(`--format expects terminal | json | markdown for a URL audit, got "${format}"`);
   const asJson = format === 'json';
@@ -513,7 +523,8 @@ if (positional[0] === 'report') {
   } else if (format === 'markdown') {
     console.log(markdownReport(findingsFromResults(results, label), {
       title: label,
-      meta: [`engine ${results.testEngine.version}`, `${viewport.width}x${viewport.height}`, flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'],
+      meta: [`engine ${results.testEngine.version}`, `${viewport.width}x${viewport.height}`, scopeLabel],
+      note: results.standard?.draft ? `${results.standard.note} [Read the draft](${results.standard.url}).` : '',
       maxNodes,
     }));
   } else {
@@ -525,7 +536,8 @@ if (positional[0] === 'report') {
     // checks; rules keeps the per-rule lines but drops the element details.
     if (level !== 'quiet') {
       console.log(`\n${bold('pour')} ${dim('·')} ${label}`);
-      console.log(dim(`engine ${results.testEngine.version} · ${viewport.width}x${viewport.height} · ${flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA'} · ${seconds}s`));
+      console.log(dim(`engine ${results.testEngine.version} · ${viewport.width}x${viewport.height} · ${scopeLabel} · ${seconds}s`));
+      if (results.standard?.draft) console.log(dim(`${results.standard.note} ${results.standard.url}`));
 
       const sorted = sortViolations(results.violations);
 
@@ -539,7 +551,10 @@ if (positional[0] === 'report') {
         const idWidth = Math.max(...sorted.map((rule) => rule.id.length));
         const countWidth = Math.max(...sorted.map((rule) => String(rule.nodes.length).length));
         for (const rule of sorted) {
-          const scs = [...new Set(rule.tags.map(toSc).filter(Boolean))];
+          // A WCAG 3 draft audit names the draft requirements instead.
+          const scs = results.standard?.draft
+            ? (rule.wcag3 ?? []).map((requirement) => requirement.num)
+            : [...new Set(rule.tags.map(toSc).filter(Boolean))];
           if (level !== 'max') {
             const count = `${String(rule.nodes.length).padStart(countWidth)} ${rule.nodes.length === 1 ? 'element ' : 'elements'}`;
             console.log(`  ${paintImpact(rule.impact, '●')} ${paintImpact(rule.impact, rule.impact.padEnd(8))}  ${bold(rule.id.padEnd(idWidth))}  ${dim(`${count}${scs.length ? `  ${scs.join(', ')}` : ''}`.trimEnd())}`);

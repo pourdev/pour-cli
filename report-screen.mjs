@@ -2882,7 +2882,7 @@ async function sampledVerdict(source, foreground, required, doc, overlays = [], 
   }
   return verdictFromRange(range, foreground, required, what, Boolean(range?.reduced));
 }
-function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
+function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
   const largeScaleNoteFor = (style, required, ratio) => {
     if (required !== thresholds.normal || ratio < thresholds.large) return "";
     const sizePx = parseFloat(style.fontSize) || 0;
@@ -2903,6 +2903,9 @@ function createContrastRule({ id, tags, help, helpUrl, thresholds }) {
   };
   const rule = {
     id,
+    // The display name both callers pass: dropped here until 2026-09-21, so
+    // the UI titled these two rules by their ids.
+    name,
     impact: "serious",
     tags,
     help,
@@ -5452,15 +5455,15 @@ var link_in_text_block_default = {
           fix: "Underline links inside text (text-decoration: underline), or add a non-colour indicator."
         };
       }
-      const backdrop = effectiveBackground(element);
-      if (!backdrop) {
+      const backdrop2 = effectiveBackground(element);
+      if (!backdrop2) {
         return {
           status: "incomplete",
           message: "This link has no underline and its colour is translucent, but the background it composites over could not be determined. Check by eye that something other than colour identifies it as a link.",
           fix: "Underline links inside text (text-decoration: underline), or add a non-colour indicator."
         };
       }
-      const over = (color) => (color.a ?? 1) < 1 ? composite(color, backdrop) : color;
+      const over = (color) => (color.a ?? 1) < 1 ? composite(color, backdrop2) : color;
       linkColor = over(linkColor);
       textColor = over(textColor);
     }
@@ -5470,6 +5473,14 @@ var link_in_text_block_default = {
     }
     const ratio = contrastRatio(linkColor, textColor);
     if (ratio >= 3) return { status: "pass" };
+    const backdrop = effectiveBackground(parent);
+    const data = {
+      link: asRgb(linkColor),
+      surrounding: asRgb(textColor),
+      ...backdrop && (backdrop.a ?? 1) === 1 ? { background: asRgb(backdrop) } : {},
+      ratio: Number(ratio.toFixed(2)),
+      required: 3
+    };
     for (let ancestor = element.parentElement; ancestor && ancestor !== parent; ancestor = ancestor.parentElement) {
       if (!(getComputedStyle(ancestor).textDecorationLine ?? "").includes("underline")) continue;
       if (ancestor.textContent.replace(/\s+/g, "") === element.textContent.replace(/\s+/g, "")) return { status: "pass" };
@@ -5544,7 +5555,8 @@ var link_in_text_block_default = {
       // staying perfectly distinct to most people, including most red-green
       // colour blindness, where the red darkens and the gap widens.
       message: ratio < 1.01 ? "This link has no underline and its colour differs from the surrounding text in hue alone, with no luminance difference: the distinction disappears entirely without colour vision, the exact failure F73 describes." : `This link has no underline and only ${shown}:1 colour difference from the surrounding text, below the 3:1 WCAG technique G183 asks for when colour is the only thing marking a link.`,
-      fix: "Underline links inside text (text-decoration: underline), or add a non-colour indicator."
+      fix: "Underline links inside text (text-decoration: underline), or add a non-colour indicator.",
+      data
     };
   }
 };

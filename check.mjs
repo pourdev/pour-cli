@@ -63,19 +63,20 @@ function positions(text) {
 async function loadLane(scriptDir) {
   const bundled = path.join(scriptDir, 'check-lane.mjs');
   if (existsSync(bundled)) {
-    const { auditSource, WCAG_TAGS, laneFor, rules } = await import(pathToFileURL(bundled).href);
-    return { auditSource, WCAG_TAGS, laneFor, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
+    const { auditSource, WCAG_TAGS, laneFor, rules, requirementsForRule } = await import(pathToFileURL(bundled).href);
+    return { auditSource, WCAG_TAGS, laneFor, requirementsForRule, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
   }
   const src = (...parts) => pathToFileURL(path.join(scriptDir, '..', '..', 'src', ...parts)).href;
   if (!existsSync(path.join(scriptDir, '..', '..', 'src', 'vscode', 'audit.js'))) {
     throw new Error('pour check needs the static lane, which this build does not carry');
   }
-  const [{ auditSource, WCAG_TAGS }, { laneFor }, { default: rules }] = await Promise.all([
+  const [{ auditSource, WCAG_TAGS }, { laneFor }, { default: rules }, { requirementsForRule }] = await Promise.all([
     import(src('vscode', 'audit.js')),
     import(src('vscode', 'lanes.js')),
     import(src('engine', 'rules', 'index.js')),
+    import(src('engine', 'wcag3.js')),
   ]);
-  return { auditSource, WCAG_TAGS, laneFor, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
+  return { auditSource, WCAG_TAGS, laneFor, requirementsForRule, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
 }
 
 /**
@@ -84,9 +85,12 @@ async function loadLane(scriptDir) {
  * line and the column, which is what the browser lane cannot give, since a
  * parsed DOM no longer knows where in the source it came from.
  */
-export async function checkFiles({ scriptDir, files, bestPractices = false, loadStylesheets = true }) {
-  const { auditSource, WCAG_TAGS, laneFor, rulesMeta } = await loadLane(scriptDir);
-  const tags = bestPractices ? [...WCAG_TAGS, 'best-practice'] : WCAG_TAGS;
+export async function checkFiles({ scriptDir, files, bestPractices = false, wcag3 = null, loadStylesheets = true }) {
+  const { auditSource, WCAG_TAGS, laneFor, requirementsForRule, rulesMeta } = await loadLane(scriptDir);
+  // wcag3: 'bronze' | 'silver' | 'gold' audits against that tier of the
+  // WCAG 3.0 Working Draft; findings then name draft requirements.
+  const baseTags = wcag3 ? [`wcag3-${wcag3}`] : WCAG_TAGS;
+  const tags = bestPractices ? [...baseTags, 'best-practice'] : baseTags;
   const findings = [];
   const perFile = [];
   let abstained = 0;
@@ -108,7 +112,9 @@ export async function checkFiles({ scriptDir, files, bestPractices = false, load
         impact: f.status === 'fail' ? f.impact : 'review',
         help: f.help,
         helpUrl: f.helpUrl,
-        sc: [...new Set((meta?.tags ?? []).map(toSc).filter(Boolean))],
+        sc: wcag3
+          ? requirementsForRule(f.rule).map((requirement) => requirement.num)
+          : [...new Set((meta?.tags ?? []).map(toSc).filter(Boolean))],
         message: f.message,
         fix: f.fix,
         file: rel,
@@ -137,9 +143,12 @@ export async function runCheck({ scriptDir, inputs, flags, version, out = consol
   const files = collectFiles(inputs);
   if (!files.length) throw new Error(`no files to check (pour check reads ${CHECKED_EXTENSIONS.join(', ')})`);
 
-  const scopeLabel = flags.has('bp') ? 'WCAG 2.2 A+AA + best practices' : 'WCAG 2.2 A+AA';
+  const wcag3 = flags.has('wcag3') ? String(flags.get('wcag3')).toLowerCase() : null;
+  if (wcag3 && !['bronze', 'silver', 'gold'].includes(wcag3)) throw new Error(`--wcag3 expects bronze | silver | gold, got "${flags.get('wcag3')}"`);
+  const scopeLabel = (wcag3 ? `WCAG 3.0 draft, ${wcag3[0].toUpperCase()}${wcag3.slice(1)} tier` : 'WCAG 2.2 A+AA')
+    + (flags.has('bp') ? ' + best practices' : '');
   const { files: perFile, findings, abstained, durationMs, rulesMeta } = await checkFiles({
-    scriptDir, files, bestPractices: flags.has('bp'), loadStylesheets: !flags.has('no-css'),
+    scriptDir, files, bestPractices: flags.has('bp'), wcag3, loadStylesheets: !flags.has('no-css'),
   });
   const counts = tally(findings);
   const rulesRan = new Set(perFile.flatMap((p) => p.rules));
@@ -154,6 +163,7 @@ export async function runCheck({ scriptDir, inputs, flags, version, out = consol
     out(markdownReport(findings, {
       title: files.length === 1 ? files[0] : `${plural(files.length, 'file')} checked`,
       meta: [`engine ${version}`, scopeLabel],
+      note: wcag3 ? 'WCAG 3.0 Working Draft: an unfinished standard. Findings come from WCAG 2 rules matched to draft requirements. Not for conformance claims.' : '',
       maxNodes,
       abstained,
     }));

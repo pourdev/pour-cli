@@ -46,7 +46,10 @@ export function findingsFromResults(results, url) {
           impact: kind === 'violation' ? rule.impact : 'review',
           help: rule.help,
           helpUrl: rule.helpUrl,
-          sc: [...new Set((rule.tags ?? []).map(toSc).filter(Boolean))],
+          // A WCAG 3 draft audit names the draft requirements instead.
+          sc: results.standard?.draft
+            ? (rule.wcag3 ?? []).map((requirement) => requirement.num)
+            : [...new Set((rule.tags ?? []).map(toSc).filter(Boolean))],
           message: String(node.failureSummary ?? rule.help).split('\n')[0],
           fix: null,
           url,
@@ -73,12 +76,12 @@ const where = (f) => (f.file ? `${f.file}:${f.line}:${f.col}` : f.target);
 // ---------------------------------------------------------------- Markdown
 /** A pull-request comment: totals, a table per rule, and the elements
  *  under a disclosure so a long report stays scannable. */
-export function markdownReport(findings, { title, meta = [], maxNodes = 5, abstained = 0 } = {}) {
+export function markdownReport(findings, { title, meta = [], note = '', maxNodes = 5, abstained = 0 } = {}) {
   const counts = tally(findings);
   const totals = ['critical', 'serious', 'moderate', 'minor'].filter((k) => counts[k]).map((k) => `**${counts[k]} ${k}**`).join(' · ')
     || '**clean**';
   const extra = (counts.review ? ` · ${counts.review} to review` : '') + (abstained ? ` · ${abstained} not judged` : '');
-  const lines = [`### pour · ${title}`, '', [...meta, totals + extra].join(' · '), ''];
+  const lines = [`### pour · ${title}`, '', [...meta, totals + extra].join(' · '), '', ...(note ? [note, ''] : [])];
   if (!findings.length) return `${lines.join('\n')}No violations found.\n`;
   const groups = new Map();
   for (const f of [...findings].sort(bySeverity)) groups.set(f.rule, [...(groups.get(f.rule) ?? []), f]);

@@ -186,6 +186,7 @@ export async function serve({ scriptDir, version = 'dev', executablePath } = {})
     }
   });
 
+  const WCAG3_TIERS = ['bronze', 'silver', 'gold'];
   const json = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 1) }] });
 
   /**
@@ -199,6 +200,7 @@ export async function serve({ scriptDir, version = 'dev', executablePath } = {})
     const { checkFiles } = await import('./check.mjs');
     const { files, findings, abstained, durationMs } = await checkFiles({
       scriptDir, files: [file], bestPractices: args.bestPractices === true,
+      wcag3: WCAG3_TIERS.includes(args.wcag3) ? args.wcag3 : null,
     });
     const detail = ['summary', 'rules', 'elements'].includes(args.detail) ? args.detail : 'elements';
     const maxNodes = Number.isInteger(args.maxNodes) && args.maxNodes >= 0 ? args.maxNodes : 5;
@@ -232,6 +234,7 @@ export async function serve({ scriptDir, version = 'dev', executablePath } = {})
     const out = {
       file: files[0]?.file ?? file,
       lane: files[0]?.lane ?? 'static',
+      ...(WCAG3_TIERS.includes(args.wcag3) ? { standard: `WCAG 3.0 Working Draft, ${args.wcag3} tier: an unfinished standard. wcag lists draft requirements matched to WCAG 2 rules. Not for conformance claims.` } : {}),
       read: 'Source, read with jsdom, not rendered: this file is a template or a component rather than a page. '
         + 'Values that come from code are left unjudged and counted in notJudged, never guessed. Rules that need layout '
         + 'or paint, contrast and target size among them, cannot run on source at all: build the page and audit it with '
@@ -256,7 +259,7 @@ export async function serve({ scriptDir, version = 'dev', executablePath } = {})
     {
       name: 'pour_audit',
       title: 'Audit a page with pour',
-      description: async () => 'Audit a URL against WCAG 2.2 A and AA with the pour engine in headless Chrome: the page is loaded, '
+      description: async () => 'Audit a URL against WCAG 2.2 A and AA (or, with wcag3, a tier of the WCAG 3.0 draft) with the pour engine in headless Chrome: the page is loaded, '
         + 'the engine runs against the live DOM, and every failing rule comes back with its severity, its success criteria, '
         + 'the failing elements as CSS paths with the fix, and the count of rules the engine would not judge without a human. '
         + 'Works on a running dev server or any URL. ' + STATE_NOTE,
@@ -265,6 +268,8 @@ export async function serve({ scriptDir, version = 'dev', executablePath } = {})
         properties: {
           ...PAGE_PROPERTIES,
           bestPractices: { type: 'boolean', description: 'Also run the best-practice rules (heading order, landmarks, redundant ARIA). Default false.' },
+          wcag3: { type: 'string', enum: ['bronze', 'silver', 'gold'], description: 'Audit against this tier of the WCAG 3.0 Working Draft instead of WCAG 2.2 A and AA. '
+            + 'An unfinished standard: WCAG 2 rules matched to draft requirements, never grounds for a conformance claim. Leave unset unless WCAG 3 is asked for.' },
           exclude: { type: 'string', description: 'A CSS selector. Matching elements, and everything inside them, are left out of every rule.' },
           detail: { type: 'string', enum: ['summary', 'rules', 'elements'], description: 'summary: totals only. rules: one entry per failing rule, no elements. elements (default): up to maxNodes elements per rule.' },
           maxNodes: { type: 'integer', description: 'Elements shown per rule at detail "elements". Default 5. 0 shows every element.' },
@@ -274,7 +279,7 @@ export async function serve({ scriptDir, version = 'dev', executablePath } = {})
         ? oneAtATime(async () => json(await staticAudit(args)))
         : withPage(args, async (page, url, viewport) => {
         const results = await runAudit(page, await engine(), {
-          tags: args.bestPractices === true ? [...WCAG_TAGS, 'best-practice'] : WCAG_TAGS,
+          tags: [...(WCAG3_TIERS.includes(args.wcag3) ? [`wcag3-${args.wcag3}`] : WCAG_TAGS), ...(args.bestPractices === true ? ['best-practice'] : [])],
           exclude: typeof args.exclude === 'string' && args.exclude.trim() ? args.exclude.trim() : undefined,
         });
         const maxNodes = Number.isInteger(args.maxNodes) && args.maxNodes >= 0 ? args.maxNodes : 5;
