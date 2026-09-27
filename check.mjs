@@ -10,7 +10,7 @@
 import { existsSync, globSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { toSc } from './lib.mjs';
+import { toSc, wcag3Set, wcag3Scope } from './lib.mjs';
 import { makePaint, markdownReport, githubAnnotations, sarifReport, tally, byPlace } from './report.mjs';
 
 const LANGUAGE_BY_EXT = {
@@ -64,19 +64,19 @@ async function loadLane(scriptDir) {
   const bundled = path.join(scriptDir, 'check-lane.mjs');
   if (existsSync(bundled)) {
     const { auditSource, WCAG_TAGS, laneFor, rules, requirementsForRule } = await import(pathToFileURL(bundled).href);
-    return { auditSource, WCAG_TAGS, laneFor, requirementsForRule, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
+    return { auditSource, WCAG_TAGS, laneFor, requirementsForRule, standardFor, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
   }
   const src = (...parts) => pathToFileURL(path.join(scriptDir, '..', '..', 'src', ...parts)).href;
   if (!existsSync(path.join(scriptDir, '..', '..', 'src', 'vscode', 'audit.js'))) {
     throw new Error('pour check needs the static lane, which this build does not carry');
   }
-  const [{ auditSource, WCAG_TAGS }, { laneFor }, { default: rules }, { requirementsForRule }] = await Promise.all([
+  const [{ auditSource, WCAG_TAGS }, { laneFor }, { default: rules }, { requirementsForRule, standardFor }] = await Promise.all([
     import(src('vscode', 'audit.js')),
     import(src('vscode', 'lanes.js')),
     import(src('engine', 'rules', 'index.js')),
     import(src('engine', 'wcag3.js')),
   ]);
-  return { auditSource, WCAG_TAGS, laneFor, requirementsForRule, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
+  return { auditSource, WCAG_TAGS, laneFor, requirementsForRule, standardFor, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
 }
 
 /**
@@ -86,9 +86,10 @@ async function loadLane(scriptDir) {
  * parsed DOM no longer knows where in the source it came from.
  */
 export async function checkFiles({ scriptDir, files, bestPractices = false, wcag3 = null, loadStylesheets = true }) {
-  const { auditSource, WCAG_TAGS, laneFor, requirementsForRule, rulesMeta } = await loadLane(scriptDir);
-  // wcag3: 'bronze' | 'silver' | 'gold' audits against that tier of the
-  // WCAG 3.0 Working Draft; findings then name draft requirements.
+  const { auditSource, WCAG_TAGS, laneFor, requirementsForRule, standardFor, rulesMeta } = await loadLane(scriptDir);
+  // wcag3: 'core' | 'supplemental' audits against that check set of the
+  // WCAG 3.0 Working Draft; findings then name draft requirements, and the
+  // draft stamp (standard) goes out with them.
   const baseTags = wcag3 ? [`wcag3-${wcag3}`] : WCAG_TAGS;
   const tags = bestPractices ? [...baseTags, 'best-practice'] : baseTags;
   const findings = [];
@@ -130,7 +131,7 @@ export async function checkFiles({ scriptDir, files, bestPractices = false, wcag
     abstained += result.abstained ?? 0;
     perFile.push({ file: rel, lane, findings: own, abstained: result.abstained ?? 0, rules: result.rules.map((r) => r.id) });
   }
-  return { files: perFile, findings, abstained, durationMs: Date.now() - started, rulesMeta };
+  return { files: perFile, findings, abstained, durationMs: Date.now() - started, rulesMeta, standard: wcag3 ? standardFor(wcag3) : null };
 }
 
 export async function runCheck({ scriptDir, inputs, flags, version, out = console.log }) {
@@ -143,27 +144,27 @@ export async function runCheck({ scriptDir, inputs, flags, version, out = consol
   const files = collectFiles(inputs);
   if (!files.length) throw new Error(`no files to check (pour check reads ${CHECKED_EXTENSIONS.join(', ')})`);
 
-  const wcag3 = flags.has('wcag3') ? String(flags.get('wcag3')).toLowerCase() : null;
-  if (wcag3 && !['bronze', 'silver', 'gold'].includes(wcag3)) throw new Error(`--wcag3 expects bronze | silver | gold, got "${flags.get('wcag3')}"`);
-  const scopeLabel = (wcag3 ? `WCAG 3.0 draft, ${wcag3[0].toUpperCase()}${wcag3.slice(1)} tier` : 'WCAG 2.2 A+AA')
+  const wcag3 = flags.has('wcag3') ? wcag3Set(flags.get('wcag3')) : null;
+  if (flags.has('wcag3') && !wcag3) throw new Error(`--wcag3 expects core | supplemental, got "${flags.get('wcag3')}"`);
+  const scopeLabel = (wcag3 ? `WCAG 3.0 draft, ${wcag3Scope(wcag3)}` : 'WCAG 2.2 A+AA')
     + (flags.has('bp') ? ' + best practices' : '');
-  const { files: perFile, findings, abstained, durationMs, rulesMeta } = await checkFiles({
+  const { files: perFile, findings, abstained, durationMs, rulesMeta, standard } = await checkFiles({
     scriptDir, files, bestPractices: flags.has('bp'), wcag3, loadStylesheets: !flags.has('no-css'),
   });
   const counts = tally(findings);
   const rulesRan = new Set(perFile.flatMap((p) => p.rules));
 
   if (format === 'json') {
-    out(JSON.stringify({ tool: { name: 'pour', version }, files: perFile, findings, abstained, durationMs }, null, 2));
+    out(JSON.stringify({ tool: { name: 'pour', version }, ...(standard ? { standard } : {}), files: perFile, findings, abstained, durationMs }, null, 2));
   } else if (format === 'sarif') {
-    out(JSON.stringify(sarifReport(findings, { version, rulesMeta }), null, 2));
+    out(JSON.stringify(sarifReport(findings, { version, rulesMeta, standard }), null, 2));
   } else if (format === 'github') {
-    for (const line of githubAnnotations(findings)) out(line);
+    for (const line of githubAnnotations(findings, { standard })) out(line);
   } else if (format === 'markdown') {
     out(markdownReport(findings, {
       title: files.length === 1 ? files[0] : `${plural(files.length, 'file')} checked`,
       meta: [`engine ${version}`, scopeLabel],
-      note: wcag3 ? 'WCAG 3.0 Working Draft: an unfinished standard. Findings come from WCAG 2 rules matched to draft requirements. Not for conformance claims.' : '',
+      note: standard ? `${standard.note} [Read the draft](${standard.url}).` : '',
       maxNodes,
       abstained,
     }));
@@ -171,6 +172,7 @@ export async function runCheck({ scriptDir, inputs, flags, version, out = consol
     const { bold, dim, color, paintImpact, reviewMark } = makePaint(process.stdout.isTTY);
     if (level !== 'quiet') {
       out(`\n${bold('pour check')} ${dim('·')} ${plural(files.length, 'file')} ${dim(`· ${scopeLabel} · ${(durationMs / 1000).toFixed(1)}s`)}`);
+      if (standard) out(dim(`${standard.note} ${standard.url}`));
       for (const entry of perFile) {
         if (!entry.findings.length && level !== 'max') continue;
         out(`\n${bold(entry.file)} ${dim(`· ${entry.lane}${entry.abstained ? ` · ${entry.abstained} not judged` : ''}`)}`);

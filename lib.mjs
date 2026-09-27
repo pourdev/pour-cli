@@ -320,6 +320,21 @@ export const toSc = (tag) => {
   return m ? `${m[1][0]}.${m[1][1]}.${m[1].slice(2)}` : null;
 };
 
+// The WCAG 3 draft's check sets (src/engine/wcag3.js): its core
+// requirements, or its core and supplemental ones. bronze, silver and gold,
+// the names the first draft mode gave them, still select the same rules
+// and are never shown.
+export const WCAG3_SETS = ['core', 'supplemental'];
+export function wcag3Set(value) {
+  const name = String(value ?? '').toLowerCase();
+  return WCAG3_SETS.includes(name) ? name : { bronze: 'core', silver: 'supplemental', gold: 'supplemental' }[name] ?? null;
+}
+export const wcag3Scope = (set) => (set === 'core' ? 'core requirements' : 'core and supplemental requirements');
+
+/** The stamp every WCAG 3 draft result carries: the draft, what it was
+ *  checked for, the note and the draft's address. */
+export const draftStamp = (standard) => `${standard.name} ${standard.status} ${standard.dated}, ${standard.scope}. ${standard.note} ${standard.url}`;
+
 export const IMPACT_ORDER = ['critical', 'serious', 'moderate', 'minor'];
 const impactRank = (id) => { const i = IMPACT_ORDER.indexOf(id); return i === -1 ? 9 : i; };
 
@@ -357,7 +372,7 @@ export function compactResults(results, { maxNodes = 5, detail = 'elements', vie
     ...(viewport ? { viewport: `${viewport.width}x${viewport.height}` } : {}),
     durationMs: results.durationMs,
     // A WCAG 3 draft audit says so before anything else is read.
-    ...(results.standard?.draft ? { standard: `${results.standard.name} ${results.standard.status} ${results.standard.dated}, ${results.standard.tierLabel} tier. ${results.standard.note}` } : {}),
+    ...(results.standard?.draft ? { standard: draftStamp(results.standard) } : {}),
     totals: {
       ...counts,
       review,

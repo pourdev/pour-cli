@@ -1,4 +1,4 @@
-/*! pour check lane 1.45.0 | MIT | https://pour.dev */
+/*! pour check lane 1.46.0 | MIT | https://pour.dev */
 
 // src/vscode/audit.js
 import jsdom from "jsdom";
@@ -6337,7 +6337,11 @@ function focusSuppressors(doc) {
   const subjects = (selectorText) => selectorText.split(",").map((part) => part.replace(FOCUS_TOKEN, "").replace(/\s+/g, " ").trim());
   let sheet = null;
   const inspect2 = (rule) => {
-    if (!rule.selectorText || !/:focus/.test(rule.selectorText)) return;
+    if (!rule.selectorText) return;
+    if (!/:focus/.test(rule.selectorText)) {
+      inspectResting(rule);
+      return;
+    }
     if (/:not\(\s*:focus-visible\s*\)/.test(rule.selectorText)) return;
     const style = rule.style;
     if (!style) return;
@@ -6357,7 +6361,29 @@ function focusSuppressors(doc) {
       const restored = suspect.subjects.every((subject) => sheet.providers.some((provider) => provider.order > suspect.order && covered(subject, provider)));
       if (!restored) suspects.push(suspect.selector);
     }
+    allProviders.push(...sheet.providers);
   };
+  const resting = [];
+  const allProviders = [];
+  const tabbable2 = (el) => !el.disabled && (el.tabIndex >= 0 || el.isContentEditable) && isRendered(el);
+  const reachesTabbable = (part) => {
+    if (part.includes("::")) return false;
+    try {
+      return [...doc.querySelectorAll(part)].some(tabbable2);
+    } catch {
+      return false;
+    }
+  };
+  const inspectResting = (rule) => {
+    const style = rule.style;
+    if (!style || !rule.selectorText) return;
+    const styles = [style, ...[...rule.cssRules ?? []].filter((child) => child.style && !child.selectorText).map((child) => child.style)];
+    if (!styles.map(outlineOf).some(removesOutline)) return;
+    const parts = subjects(rule.selectorText).filter(reachesTabbable);
+    if (parts.length) resting.push({ selector: rule.selectorText, subjects: parts });
+  };
+  const typeOnly = (subject) => !/[#.[:]/.test(subject);
+  const outranked = (subject) => allProviders.some((provider) => provider.subjects.some((p2) => p2 === subject || (p2 === "" || p2 === "*") && typeOnly(subject)));
   const scan = (rules) => {
     for (const rule of rules) {
       sheet.order++;
@@ -6372,6 +6398,12 @@ function focusSuppressors(doc) {
     } catch {
     }
     settle();
+  }
+  for (const suspect of resting) {
+    if (!suspect.subjects.every(outranked)) suspects.push(suspect.selector);
+  }
+  for (const el of doc.querySelectorAll("[style]")) {
+    if (removesOutline(outlineOf(el.style)) && tabbable2(el)) suspects.push(`the style attribute of <${el.localName}>`);
   }
   return suspects;
 }
@@ -6390,7 +6422,7 @@ var focus_visible_default = {
     const shown = suspects.slice(0, 3).join(", ");
     return {
       status: "incomplete",
-      message: `${suspects.length} CSS rule(s) remove the focus outline without setting a replacement in the same rule (e.g. ${shown}) \u2014 if no other rule provides a visible indicator, keyboard users lose their place. Tab through the page to check.`
+      message: `${suspects.length} CSS rule(s) or style attribute(s) remove the focus outline with no replacement found (e.g. ${shown}). If nothing else draws a visible indicator, keyboard users lose their place. Tab through the page to check.`
     };
   }
 };
@@ -8305,17 +8337,16 @@ var draftInfo = {
   url: "https://www.w3.org/TR/2026/WD-wcag-3.0-20260910/",
   note: "An unfinished standard. Findings come from WCAG 2 rules matched to draft requirements, with WCAG 2 values where the draft has none yet. Not for conformance claims."
 };
-var TIERS = ["bronze", "silver", "gold"];
-var TIER_TYPES = {
-  bronze: /* @__PURE__ */ new Set(["core", "content"]),
-  silver: /* @__PURE__ */ new Set(["core", "content", "supplemental"]),
-  gold: /* @__PURE__ */ new Set(["core", "content", "supplemental", "organization"])
+var CHECK_SETS = ["core", "supplemental"];
+var SET_TYPES = {
+  core: /* @__PURE__ */ new Set(["core"]),
+  supplemental: /* @__PURE__ */ new Set(["core", "supplemental"])
 };
+var RENAMED_SETS = { bronze: "core", silver: "supplemental", gold: "supplemental" };
 var TYPE_LABELS = {
   core: "Core",
   supplemental: "Supplemental",
-  content: "Assertion",
-  organization: "Assertion"
+  assertion: "Assertion"
 };
 var RAW = [
   g("2.1.1", "Image alternatives"),
@@ -8335,9 +8366,9 @@ var RAW = [
   p("2.1.4.7", "Speaker language identified in transcripts", "supplemental", "x2-1-4-7-speaker-language-identified-in-transcripts"),
   p("2.1.4.8", "Sounds identified in transcripts", "core", "x2-1-4-8-sounds-identified-in-transcripts"),
   p("2.1.4.9", "Visual information identified in transcripts", "core", "x2-1-4-9-visual-information-identified-in-transcripts"),
-  p("2.1.4.10", "Transcripts style guide", "organization", "x2-1-4-10-transcripts-style-guide"),
-  p("2.1.4.11", "Transcripts usability testing", "content", "x2-1-4-11-transcripts-usability-testing"),
-  p("2.1.4.12", "Transcripts reviewed by content authors", "content", "x2-1-4-12-transcripts-reviewed-by-content-authors"),
+  p("2.1.4.10", "Transcripts style guide", "assertion", "x2-1-4-10-transcripts-style-guide"),
+  p("2.1.4.11", "Transcripts usability testing", "assertion", "x2-1-4-11-transcripts-usability-testing"),
+  p("2.1.4.12", "Transcripts reviewed by content authors", "assertion", "x2-1-4-12-transcripts-reviewed-by-content-authors"),
   g("2.1.5", "Captions"),
   p("2.1.5.1", "Captions adjustable", "supplemental", "x2-1-5-1-captions-adjustable"),
   p("2.1.5.2", "Captions available (prerecorded)", "core", "x2-1-5-2-captions-available-prerecorded"),
@@ -8352,9 +8383,9 @@ var RAW = [
   p("2.1.5.11", "Speakers identified in captions", "supplemental", "x2-1-5-11-speakers-identified-in-captions"),
   p("2.1.5.12", "Speaker language identified in captions", "supplemental", "x2-1-5-12-speaker-language-identified-in-captions"),
   p("2.1.5.13", "Sounds identified in captions", "core", "x2-1-5-13-sounds-identified-in-captions"),
-  p("2.1.5.14", "Captions style guide", "organization", "x2-1-5-14-captions-style-guide"),
-  p("2.1.5.15", "Captions usability testing", "content", "x2-1-5-15-captions-usability-testing"),
-  p("2.1.5.16", "Captions reviewed by content authors", "content", "x2-1-5-16-captions-reviewed-by-content-authors"),
+  p("2.1.5.14", "Captions style guide", "assertion", "x2-1-5-14-captions-style-guide"),
+  p("2.1.5.15", "Captions usability testing", "assertion", "x2-1-5-15-captions-usability-testing"),
+  p("2.1.5.16", "Captions reviewed by content authors", "assertion", "x2-1-5-16-captions-reviewed-by-content-authors"),
   g("2.1.6", "Audio descriptions"),
   p("2.1.6.1", "Audio descriptions available (prerecorded)", "core", "x2-1-6-1-audio-descriptions-available-prerecorded"),
   p("2.1.6.2", "Audio descriptions equivalent (prerecorded)", "core", "x2-1-6-2-audio-descriptions-equivalent-prerecorded"),
@@ -8368,13 +8399,13 @@ var RAW = [
   p("2.1.6.10", "Speaker language identified in audio descriptions", "supplemental", "x2-1-6-10-speaker-language-identified-in-audio-descriptions"),
   p("2.1.6.11", "Sounds identified in audio descriptions", "core", "x2-1-6-11-sounds-identified-in-audio-descriptions"),
   p("2.1.6.12", "Visual information identified in audio descriptions", "core", "x2-1-6-12-visual-information-identified-in-audio-descriptions"),
-  p("2.1.6.13", "Audio descriptions style guide", "organization", "x2-1-6-13-audio-descriptions-style-guide"),
-  p("2.1.6.14", "Audio descriptions usability testing", "content", "x2-1-6-14-audio-descriptions-usability-testing"),
-  p("2.1.6.15", "Audio descriptions reviewed by content authors", "content", "x2-1-6-15-audio-descriptions-reviewed-by-content-authors"),
+  p("2.1.6.13", "Audio descriptions style guide", "assertion", "x2-1-6-13-audio-descriptions-style-guide"),
+  p("2.1.6.14", "Audio descriptions usability testing", "assertion", "x2-1-6-14-audio-descriptions-usability-testing"),
+  p("2.1.6.15", "Audio descriptions reviewed by content authors", "assertion", "x2-1-6-15-audio-descriptions-reviewed-by-content-authors"),
   g("2.1.7", "Sign language"),
   p("2.1.7.1", "Sign language available (prerecorded)", "supplemental", "x2-1-7-1-sign-language-available-prerecorded"),
   p("2.1.7.2", "Sign language controllable", "supplemental", "x2-1-7-2-sign-language-controllable"),
-  p("2.1.7.3", "Sign language policy (live)", "organization", "x2-1-7-3-sign-language-policy-live"),
+  p("2.1.7.3", "Sign language policy (live)", "assertion", "x2-1-7-3-sign-language-policy-live"),
   g("2.1.8", "Single sense"),
   p("2.1.8.1", "Hue not relied on", "core", "x2-1-8-1-hue-not-relied-on"),
   p("2.1.8.2", "Graphical object contrast sufficient", "core", "x2-1-8-2-graphical-object-contrast-sufficient"),
@@ -8382,8 +8413,8 @@ var RAW = [
   p("2.1.8.4", "Sound not relied on", "core", "x2-1-8-4-sound-not-relied-on"),
   p("2.1.8.5", "Spatial audio not relied on", "core", "x2-1-8-5-spatial-audio-not-relied-on"),
   g("2.1.9", "Accessible media player"),
-  p("2.1.9.1", "Accessible video player selected", "content", "x2-1-9-1-accessible-video-player-selected"),
-  p("2.1.9.2", "Accessible audio player selected", "content", "x2-1-9-2-accessible-audio-player-selected"),
+  p("2.1.9.1", "Accessible video player selected", "assertion", "x2-1-9-1-accessible-video-player-selected"),
+  p("2.1.9.2", "Accessible audio player selected", "assertion", "x2-1-9-2-accessible-audio-player-selected"),
   g("2.2.1", "Text appearance"),
   p("2.2.1.1", "Blocks of text readable (minimum)", "core", "x2-2-1-1-blocks-of-text-readable-minimum"),
   p("2.2.1.2", "Text style readable (minimum)", "core", "x2-2-1-2-text-style-readable-minimum"),
@@ -8408,13 +8439,13 @@ var RAW = [
   p("2.2.3.5", "Diacritics available", "core", "x2-2-3-5-diacritics-available"),
   p("2.2.3.6", "No nested clauses", "supplemental", "x2-2-3-6-no-nested-clauses"),
   p("2.2.3.7", "No unnecessary words", "supplemental", "x2-2-3-7-no-unnecessary-words"),
-  p("2.2.3.8", "Clear language review", "organization", "x2-2-3-8-clear-language-review"),
-  p("2.2.3.9", "Visual aids review", "organization", "x2-2-3-9-visual-aids-review"),
+  p("2.2.3.8", "Clear language review", "assertion", "x2-2-3-8-clear-language-review"),
+  p("2.2.3.9", "Visual aids review", "assertion", "x2-2-3-9-visual-aids-review"),
   g("2.3.1", "Keyboard focus appearance"),
   p("2.3.1.1", "Default focus indicator used", "supplemental", "x2-3-1-1-default-focus-indicator-used"),
   p("2.3.1.2", "Focus indicator contrast sufficient", "core", "x2-3-1-2-focus-indicator-contrast-sufficient"),
   p("2.3.1.3", "Focus indicator size sufficient", "supplemental", "x2-3-1-3-focus-indicator-size-sufficient"),
-  p("2.3.1.4", "Focus indicator style guide", "organization", "x2-3-1-4-focus-indicator-style-guide"),
+  p("2.3.1.4", "Focus indicator style guide", "assertion", "x2-3-1-4-focus-indicator-style-guide"),
   g("2.3.2", "Pointer focus appearance"),
   p("2.3.2.1", "Pointer activation indicated (minimum)", "core", "x2-3-2-1-pointer-activation-indicated-minimum"),
   p("2.3.2.2", "Pointer activation indicated (enhanced)", "supplemental", "x2-3-2-2-pointer-activation-indicated-enhanced"),
@@ -8428,9 +8459,9 @@ var RAW = [
   p("2.3.3.2", "Focus retained", "supplemental", "x2-3-3-2-focus-retained"),
   p("2.3.3.3", "Focus order meaningful", "core", "x2-3-3-3-focus-order-meaningful"),
   g("2.3.4", "Expected behavior"),
-  p("2.3.4.1", "Consistent interactions", "content", "x2-3-4-1-consistent-interactions"),
+  p("2.3.4.1", "Consistent interactions", "assertion", "x2-3-4-1-consistent-interactions"),
   p("2.3.4.2", "Consistent control location", "supplemental", "x2-3-4-2-consistent-control-location"),
-  p("2.3.4.3", "Conventional pattern used", "content", "x2-3-4-3-conventional-pattern-used"),
+  p("2.3.4.3", "Conventional pattern used", "assertion", "x2-3-4-3-conventional-pattern-used"),
   g("2.3.5", "Control information"),
   p("2.3.5.1", "Interactive element contrast sufficient", "core", "x2-3-5-1-interactive-element-contrast-sufficient"),
   p("2.3.5.2", "Interactive element names available", "core", "x2-3-5-2-interactive-element-names-available"),
@@ -8451,7 +8482,7 @@ var RAW = [
   g("2.4.2", "Physical or cognitive effort when using keyboard"),
   p("2.4.2.1", "Navigation keys described", "supplemental", "x2-4-2-1-navigation-keys-described"),
   p("2.4.2.2", "No repetitive adjacent interactive elements", "supplemental", "x2-4-2-2-no-repetitive-adjacent-interactive-elements"),
-  p("2.4.2.3", "Keyboard effort comparable", "content", "x2-4-2-3-keyboard-effort-comparable"),
+  p("2.4.2.3", "Keyboard effort comparable", "assertion", "x2-4-2-3-keyboard-effort-comparable"),
   g("2.4.3", "Pointer input"),
   p("2.4.3.1", "Pointer activation controllable", "core", "x2-4-3-1-pointer-activation-controllable"),
   p("2.4.3.2", "Simple pointer input available", "core", "x2-4-3-2-simple-pointer-input-available"),
@@ -8461,7 +8492,7 @@ var RAW = [
   g("2.4.4", "Speech and voice input"),
   p("2.4.4.1", "Speech not relied on", "core", "x2-4-4-1-speech-not-relied-on"),
   p("2.4.4.2", "Real-time text available", "core", "x2-4-4-2-real-time-text-available"),
-  p("2.4.4.3", "Generated speech testing", "content", "x2-4-4-3-generated-speech-testing"),
+  p("2.4.4.3", "Generated speech testing", "assertion", "x2-4-4-3-generated-speech-testing"),
   g("2.4.5", "Input operation"),
   p("2.4.5.1", "Hover or focus content dismissible", "core", "x2-4-5-1-hover-or-focus-content-dismissible"),
   p("2.4.5.2", "Hover content persistent", "core", "x2-4-5-2-hover-content-persistent"),
@@ -8485,7 +8516,7 @@ var RAW = [
   p("2.5.2.1", "Errors preventable", "core", "x2-5-2-1-errors-preventable"),
   p("2.5.2.2", "Submission status notified", "supplemental", "x2-5-2-2-submission-status-notified"),
   p("2.5.2.3", "Data entry validated", "supplemental", "x2-5-2-3-data-entry-validated"),
-  p("2.5.2.4", "Error prevention review", "content", "x2-5-2-4-error-prevention-review"),
+  p("2.5.2.4", "Error prevention review", "assertion", "x2-5-2-4-error-prevention-review"),
   g("2.6.1", "Avoid physical harm"),
   p("2.6.1.1", "No flashing over threshold", "core", "x2-6-1-1-no-flashing-over-threshold"),
   p("2.6.1.2", "No flashing over threshold (no exceptions)", "supplemental", "x2-6-1-2-no-flashing-over-threshold-no-exceptions"),
@@ -8494,12 +8525,12 @@ var RAW = [
   p("2.6.1.5", "Trigger warning available", "core", "x2-6-1-5-trigger-warning-available"),
   p("2.6.1.6", "Haptic stimulation adjustable", "core", "x2-6-1-6-haptic-stimulation-adjustable"),
   p("2.6.1.7", "Audio shifting adjustable", "core", "x2-6-1-7-audio-shifting-adjustable"),
-  p("2.6.1.8", "Safe content review", "content", "x2-6-1-8-safe-content-review"),
+  p("2.6.1.8", "Safe content review", "assertion", "x2-6-1-8-safe-content-review"),
   g("2.7.1", "Recognizable layouts"),
-  p("2.7.1.1", "Conventional layout review", "content", "x2-7-1-1-conventional-layout-review"),
+  p("2.7.1.1", "Conventional layout review", "assertion", "x2-7-1-1-conventional-layout-review"),
   g("2.7.2", "User orientation"),
   p("2.7.2.1", "Page/view title available", "core", "x2-7-2-1-page-view-title-available"),
-  p("2.7.2.2", "Location within product review", "content", "x2-7-2-2-location-within-product-review"),
+  p("2.7.2.2", "Location within product review", "assertion", "x2-7-2-2-location-within-product-review"),
   p("2.7.2.3", "All steps listed", "core", "x2-7-2-3-all-steps-listed"),
   p("2.7.2.4", "Current step indicated", "core", "x2-7-2-4-current-step-indicated"),
   p("2.7.2.5", "Page/view change notified", "core", "x2-7-2-5-page-view-change-notified"),
@@ -8511,8 +8542,8 @@ var RAW = [
   p("2.7.3.4", "Heading structure available", "supplemental", "x2-7-3-4-heading-structure-available"),
   p("2.7.3.5", "Order detectable", "core", "x2-7-3-5-order-detectable"),
   p("2.7.3.6", "Blocks of content available (enhanced)", "supplemental", "x2-7-3-6-blocks-of-content-available-enhanced"),
-  p("2.7.3.7", "Clear structure review", "organization", "x2-7-3-7-clear-structure-review"),
-  p("2.7.3.8", "Key information usability testing", "content", "x2-7-3-8-key-information-usability-testing"),
+  p("2.7.3.7", "Clear structure review", "assertion", "x2-7-3-7-clear-structure-review"),
+  p("2.7.3.8", "Key information usability testing", "assertion", "x2-7-3-8-key-information-usability-testing"),
   g("2.7.4", "No obstruction"),
   p("2.7.4.1", "Overlay content dismissible", "core", "x2-7-4-1-overlay-content-dismissible"),
   g("2.8.1", "Consistency"),
@@ -8525,12 +8556,12 @@ var RAW = [
   g("2.9.2", "Adequate time"),
   p("2.9.2.1", "Timeout adjustable", "supplemental", "x2-9-2-1-timeout-adjustable"),
   p("2.9.2.2", "No time limits", "supplemental", "x2-9-2-2-no-time-limits"),
-  p("2.9.2.3", "No unnecessary time limits", "content", "x2-9-2-3-no-unnecessary-time-limits"),
+  p("2.9.2.3", "No unnecessary time limits", "assertion", "x2-9-2-3-no-unnecessary-time-limits"),
   p("2.9.2.4", "Time limits conveyed", "supplemental", "x2-9-2-4-time-limits-conveyed"),
   g("2.9.3", "Avoid deception"),
   p("2.9.3.1", "Preselections visible", "core", "x2-9-3-1-preselections-visible"),
-  p("2.9.3.2", "Deceptive practices usability testing", "content", "x2-9-3-2-deceptive-practices-usability-testing"),
-  p("2.9.3.3", "Deceptive messaging expert review", "content", "x2-9-3-3-deceptive-messaging-expert-review"),
+  p("2.9.3.2", "Deceptive practices usability testing", "assertion", "x2-9-3-2-deceptive-practices-usability-testing"),
+  p("2.9.3.3", "Deceptive messaging expert review", "assertion", "x2-9-3-3-deceptive-messaging-expert-review"),
   g("2.9.4", "Retain information"),
   p("2.9.4.1", "Going back supported", "supplemental", "x2-9-4-1-going-back-supported"),
   p("2.9.4.2", "No redundant entry", "supplemental", "x2-9-4-2-no-redundant-entry"),
@@ -8540,22 +8571,22 @@ var RAW = [
   p("2.9.5.2", "Information requirements available at start", "supplemental", "x2-9-5-2-information-requirements-available-at-start"),
   p("2.9.5.3", "Process instructions available", "supplemental", "x2-9-5-3-process-instructions-available"),
   g("2.9.6", "Unnecessary steps"),
-  p("2.9.6.1", "Usability testing for unnecessary steps", "content", "x2-9-6-1-usability-testing-for-unnecessary-steps"),
+  p("2.9.6.1", "Usability testing for unnecessary steps", "assertion", "x2-9-6-1-usability-testing-for-unnecessary-steps"),
   g("2.10.1", "Risk"),
   p("2.10.1.1", "Consequences of choices explained", "core", "x2-10-1-1-consequences-of-choices-explained"),
   p("2.10.1.2", "Consequences explained before agreement", "supplemental", "x2-10-1-2-consequences-explained-before-agreement"),
-  p("2.10.1.3", "Diverse disabilities considered", "content", "x2-10-1-3-diverse-disabilities-considered"),
-  p("2.10.1.4", "Algorithm inclusivity review", "organization", "x2-10-1-4-algorithm-inclusivity-review"),
+  p("2.10.1.3", "Diverse disabilities considered", "assertion", "x2-10-1-3-diverse-disabilities-considered"),
+  p("2.10.1.4", "Algorithm inclusivity review", "assertion", "x2-10-1-4-algorithm-inclusivity-review"),
   g("2.10.2", "Algorithms"),
-  p("2.10.2.1", "Inclusive data set", "content", "x2-10-2-1-inclusive-data-set"),
-  p("2.10.2.2", "No harm from algorithms", "content", "x2-10-2-2-no-harm-from-algorithms"),
+  p("2.10.2.1", "Inclusive data set", "assertion", "x2-10-2-1-inclusive-data-set"),
+  p("2.10.2.2", "No harm from algorithms", "assertion", "x2-10-2-2-no-harm-from-algorithms"),
   g("2.11.1", "Help available"),
   p("2.11.1.1", "Consistent help available", "supplemental", "x2-11-1-1-consistent-help-available"),
   p("2.11.1.2", "Contextual help available", "supplemental", "x2-11-1-2-contextual-help-available"),
   p("2.11.1.3", "Disabled controls explained", "supplemental", "x2-11-1-3-disabled-controls-explained"),
   p("2.11.1.4", "Sensory characteristics not relied on", "core", "x2-11-1-4-sensory-characteristics-not-relied-on"),
-  p("2.11.1.5", "Supported decision-making review", "content", "x2-11-1-5-supported-decision-making-review"),
-  p("2.11.1.6", "Help usability testing", "content", "x2-11-1-6-help-usability-testing"),
+  p("2.11.1.5", "Supported decision-making review", "assertion", "x2-11-1-5-supported-decision-making-review"),
+  p("2.11.1.6", "Help usability testing", "assertion", "x2-11-1-6-help-usability-testing"),
   g("2.11.2", "Feedback"),
   p("2.11.2.1", "Feedback mechanism available", "supplemental", "x2-11-2-1-feedback-mechanism-available"),
   g("2.12.1", "Assistive technology control"),
@@ -8676,11 +8707,15 @@ var RULE_REQUIREMENTS = {
   "summary-name": ["2.3.5.2"],
   "valid-role": ["2.3.5.6"]
 };
-function tierFromTags(tags) {
+function checkSetOf(value) {
+  const name = String(value ?? "").toLowerCase();
+  return CHECK_SETS.includes(name) ? name : RENAMED_SETS[name] ?? null;
+}
+function checkSetFromTags(tags) {
   let found = null;
   for (const tag of tags ?? []) {
-    const tier = /^wcag3-(bronze|silver|gold)$/.exec(tag)?.[1];
-    if (tier && (!found || TIERS.indexOf(tier) > TIERS.indexOf(found))) found = tier;
+    const set = /^wcag3-/.test(tag) ? checkSetOf(tag.slice(6)) : null;
+    if (set && (!found || CHECK_SETS.indexOf(set) > CHECK_SETS.indexOf(found))) found = set;
   }
   return found;
 }
@@ -8690,15 +8725,15 @@ function requirementsForRule(ruleId) {
     return { num, name, type: TYPE_LABELS[type], url };
   });
 }
-function ruleInTier(ruleId, tier) {
-  const types = TIER_TYPES[tier];
+function ruleInCheckSet(ruleId, set) {
+  const types = SET_TYPES[set];
   return Boolean(types) && (RULE_REQUIREMENTS[ruleId] ?? []).some((num) => types.has(provisionByNum.get(num).type));
 }
 function ruleMatchesTags(rule, tags) {
   if (!tags?.length) return true;
   if (rule.tags.some((tag) => tags.includes(tag))) return true;
-  const tier = tierFromTags(tags);
-  return Boolean(tier) && ruleInTier(rule.id, tier);
+  const set = checkSetFromTags(tags);
+  return Boolean(set) && ruleInCheckSet(rule.id, set);
 }
 
 // src/vscode/rules-list.js

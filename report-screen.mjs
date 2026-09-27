@@ -52,6 +52,13 @@ function outOfSequentialFocus(element, within = null) {
   }
   return false;
 }
+function isRendered(element) {
+  if (typeof element.checkVisibility === "function") {
+    return element.checkVisibility({ visibilityProperty: true });
+  }
+  const style = getComputedStyle(element);
+  return style.display !== "none" && style.visibility !== "hidden";
+}
 var attributesGetter = typeof Element !== "undefined" ? Object.getOwnPropertyDescriptor(Element.prototype, "attributes")?.get : null;
 function attributesOf(element) {
   const own = element.attributes;
@@ -3810,9 +3817,9 @@ var aria_hidden_focus_default = {
   selector: '[aria-hidden="true"]',
   visibleOnly: false,
   // these elements are hidden from AT by definition
-  evaluate(element, { isRendered }) {
+  evaluate(element, { isRendered: isRendered2 }) {
     const focusable = [element, ...element.querySelectorAll(FOCUSABLE)].filter(
-      (el) => el.matches?.(FOCUSABLE) && !(el.hasAttribute("tabindex") && el.tabIndex < 0) && !el.matches(":disabled") && !el.closest("[inert]") && isRendered(el) && cumulativeOpacity(el) > 0
+      (el) => el.matches?.(FOCUSABLE) && !(el.hasAttribute("tabindex") && el.tabIndex < 0) && !el.matches(":disabled") && !el.closest("[inert]") && isRendered2(el) && cumulativeOpacity(el) > 0
     );
     if (!focusable.length) return { status: "pass" };
     const doc = element.ownerDocument;
@@ -3821,7 +3828,7 @@ var aria_hidden_focus_default = {
       modal = doc.querySelector("dialog:modal");
     } catch {
     }
-    modal ??= [...doc.querySelectorAll('[aria-modal="true"]')].find(isRendered) ?? null;
+    modal ??= [...doc.querySelectorAll('[aria-modal="true"]')].find(isRendered2) ?? null;
     if (modal && !element.contains(modal) && !modal.contains(element)) {
       return {
         status: "incomplete",
@@ -3846,12 +3853,12 @@ var list_structure_default = {
   help: "Lists must only contain list items",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/info-and-relationships.html",
   selector: "ul, ol",
-  evaluate(element, { isRendered }) {
+  evaluate(element, { isRendered: isRendered2 }) {
     if (effectiveRole(element) !== "list") return { status: "pass" };
     const effectiveChildren = (parent) => [...parent.children].flatMap((child) => child.tagName === "SLOT" ? child.assignedElements?.().length ? child.assignedElements() : [...child.children] : [child]);
     const isValidChild = (child) => {
       if (NEVER_RENDERED.has(child.tagName)) return true;
-      if (isRendered && !isRendered(child)) return true;
+      if (isRendered2 && !isRendered2(child)) return true;
       const role = effectiveRole(child);
       if (child.tagName === "LI") return !role || ITEM_ROLES.includes(role);
       if (ITEM_ROLES.includes(role)) return true;
@@ -3864,7 +3871,7 @@ var list_structure_default = {
     };
     const invalid = effectiveChildren(element).filter((child) => !isValidChild(child));
     if (!invalid.length) {
-      const renderedItems = effectiveChildren(element).filter((child) => child.tagName === "LI" && (!isRendered || isRendered(child)));
+      const renderedItems = effectiveChildren(element).filter((child) => child.tagName === "LI" && (!isRendered2 || isRendered2(child)));
       const neutralised = renderedItems.filter((child) => ["presentation", "none"].includes(effectiveRole(child)));
       if (renderedItems.length && neutralised.length === renderedItems.length) {
         return {
@@ -3897,9 +3904,9 @@ var nested_interactive_default = {
   help: "A control must not contain another control",
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/name-role-value.html",
   selector: INTERACTIVE,
-  evaluate(element, { isRendered }) {
+  evaluate(element, { isRendered: isRendered2 }) {
     const NATIVE = "a[href], button, input, select, textarea, summary, audio[controls], video[controls]";
-    const candidates = flatDescendants(element).filter((el) => el.matches?.(INTERACTIVE) && !el.matches(":disabled") && !isInert(el) && !(el.tagName === "INPUT" && el.type === "hidden") && isRendered(el) && !(el.closest('[aria-hidden="true"]') && !outOfSequentialFocus(el, element)) && (el.matches(NATIVE) || el.hasAttribute("tabindex")));
+    const candidates = flatDescendants(element).filter((el) => el.matches?.(INTERACTIVE) && !el.matches(":disabled") && !isInert(el) && !(el.tagName === "INPUT" && el.type === "hidden") && isRendered2(el) && !(el.closest('[aria-hidden="true"]') && !outOfSequentialFocus(el, element)) && (el.matches(NATIVE) || el.hasAttribute("tabindex")));
     const nested = candidates.find((el) => !outOfSequentialFocus(el, element)) ?? candidates[0];
     if (!nested) return { status: "pass" };
     if (outOfSequentialFocus(nested, element) && !element.matches("a[href], button")) {
@@ -3949,7 +3956,7 @@ var bypass_blocks_default = {
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/bypass-blocks.html",
   selector: "html",
   visibleOnly: false,
-  evaluate(element, { isRendered }) {
+  evaluate(element, { isRendered: isRendered2 }) {
     if (isEmbeddedDocument(element.ownerDocument)) return { status: "pass" };
     const doc = element.ownerDocument;
     const roots = collectRoots(doc);
@@ -3962,7 +3969,7 @@ var bypass_blocks_default = {
       for (const link of root.querySelectorAll?.('a[href^="#"]') ?? []) {
         const id = link.getAttribute("href").slice(1);
         if (!id) continue;
-        if (isRendered && !isRendered(link)) continue;
+        if (isRendered2 && !isRendered2(link)) continue;
         if (roots.some((r) => r.getElementById?.(id) || r.querySelector?.(`[id="${CSS.escape(id)}"]`))) {
           return { status: "pass" };
         }
@@ -5061,8 +5068,8 @@ var definition_list_default = {
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/info-and-relationships.html",
   selector: "dl:not([role])",
   // a role attribute replaces the dl semantics
-  evaluate(element, { isRendered }) {
-    const exposed = (child) => !NEVER_RENDERED.has(child.tagName) && !child.closest('[aria-hidden="true"]') && !isInert(child) && (!isRendered || isRendered(child) || getComputedStyle(child).display === "contents");
+  evaluate(element, { isRendered: isRendered2 }) {
+    const exposed = (child) => !NEVER_RENDERED.has(child.tagName) && !child.closest('[aria-hidden="true"]') && !isInert(child) && (!isRendered2 || isRendered2(child) || getComputedStyle(child).display === "contents");
     const invalid = [...element.children].filter((child) => !ALLOWED.has(child.tagName) && exposed(child));
     if (invalid.length) {
       const tags = [...new Set(invalid.map((child) => `<${child.tagName.toLowerCase()}>`))].join(", ");
@@ -6225,7 +6232,11 @@ function focusSuppressors(doc) {
   const subjects = (selectorText) => selectorText.split(",").map((part) => part.replace(FOCUS_TOKEN, "").replace(/\s+/g, " ").trim());
   let sheet = null;
   const inspect2 = (rule) => {
-    if (!rule.selectorText || !/:focus/.test(rule.selectorText)) return;
+    if (!rule.selectorText) return;
+    if (!/:focus/.test(rule.selectorText)) {
+      inspectResting(rule);
+      return;
+    }
     if (/:not\(\s*:focus-visible\s*\)/.test(rule.selectorText)) return;
     const style = rule.style;
     if (!style) return;
@@ -6245,7 +6256,29 @@ function focusSuppressors(doc) {
       const restored = suspect.subjects.every((subject) => sheet.providers.some((provider) => provider.order > suspect.order && covered(subject, provider)));
       if (!restored) suspects.push(suspect.selector);
     }
+    allProviders.push(...sheet.providers);
   };
+  const resting = [];
+  const allProviders = [];
+  const tabbable2 = (el) => !el.disabled && (el.tabIndex >= 0 || el.isContentEditable) && isRendered(el);
+  const reachesTabbable = (part) => {
+    if (part.includes("::")) return false;
+    try {
+      return [...doc.querySelectorAll(part)].some(tabbable2);
+    } catch {
+      return false;
+    }
+  };
+  const inspectResting = (rule) => {
+    const style = rule.style;
+    if (!style || !rule.selectorText) return;
+    const styles = [style, ...[...rule.cssRules ?? []].filter((child) => child.style && !child.selectorText).map((child) => child.style)];
+    if (!styles.map(outlineOf).some(removesOutline)) return;
+    const parts = subjects(rule.selectorText).filter(reachesTabbable);
+    if (parts.length) resting.push({ selector: rule.selectorText, subjects: parts });
+  };
+  const typeOnly = (subject) => !/[#.[:]/.test(subject);
+  const outranked = (subject) => allProviders.some((provider) => provider.subjects.some((p) => p === subject || (p === "" || p === "*") && typeOnly(subject)));
   const scan = (rules) => {
     for (const rule of rules) {
       sheet.order++;
@@ -6260,6 +6293,12 @@ function focusSuppressors(doc) {
     } catch {
     }
     settle();
+  }
+  for (const suspect of resting) {
+    if (!suspect.subjects.every(outranked)) suspects.push(suspect.selector);
+  }
+  for (const el of doc.querySelectorAll("[style]")) {
+    if (removesOutline(outlineOf(el.style)) && tabbable2(el)) suspects.push(`the style attribute of <${el.localName}>`);
   }
   return suspects;
 }
@@ -6278,7 +6317,7 @@ var focus_visible_default = {
     const shown = suspects.slice(0, 3).join(", ");
     return {
       status: "incomplete",
-      message: `${suspects.length} CSS rule(s) remove the focus outline without setting a replacement in the same rule (e.g. ${shown}) \u2014 if no other rule provides a visible indicator, keyboard users lose their place. Tab through the page to check.`
+      message: `${suspects.length} CSS rule(s) or style attribute(s) remove the focus outline with no replacement found (e.g. ${shown}). If nothing else draws a visible indicator, keyboard users lose their place. Tab through the page to check.`
     };
   }
 };
@@ -7373,7 +7412,7 @@ var pointer_gesture_alternative_default = {
   helpUrl: "https://www.w3.org/WAI/WCAG22/Understanding/pointer-gestures.html",
   selector: "*",
   visibleOnly: false,
-  evaluateAll(elements, { isRendered }) {
+  evaluateAll(elements, { isRendered: isRendered2 }) {
     const candidates = /* @__PURE__ */ new Set();
     for (const element of elements) {
       const tag = element.tagName;
@@ -7381,7 +7420,7 @@ var pointer_gesture_alternative_default = {
       if (element.getAttribute("draggable") === "true" || element.getAttribute("role") === "slider" || tag === "INPUT" && element.type === "range") continue;
       const rect = element.getBoundingClientRect();
       if (rect.width < 100 || rect.height < 60) continue;
-      if (!isRendered(element)) continue;
+      if (!isRendered2(element)) continue;
       const value = getComputedStyle(element).touchAction;
       if (!handsGestureToScript(value)) continue;
       candidates.add(element);

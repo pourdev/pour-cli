@@ -4,7 +4,7 @@
 // code scanning, and JSON. A finding from the file lane carries a file and
 // a span; one from the browser lane carries a URL and a selector; each
 // renderer says what it can with what it has.
-import { toSc } from './lib.mjs';
+import { toSc, draftStamp } from './lib.mjs';
 
 // The terminal palette the command already uses: heat on the top two
 // severities, neutrals below, review in blue (--sev-*-vivid in
@@ -114,9 +114,10 @@ const escapeData = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').r
 const escapeProp = (s) => escapeData(s).replace(/:/g, '%3A').replace(/,/g, '%2C');
 const annotationLevel = (f) => (f.kind === 'review' ? 'notice' : ['critical', 'serious'].includes(f.impact) ? 'error' : 'warning');
 
-export function githubAnnotations(findings) {
+export function githubAnnotations(findings, { standard = null } = {}) {
   return [...findings].sort(byPlace).map((f) => {
-    const props = { file: f.file, line: f.line, col: f.col, endLine: f.endLine ?? f.line, endColumn: f.endCol ?? f.col, title: `pour · ${f.rule}` };
+    const title = `pour · ${f.rule}${standard ? ' (WCAG 3 draft)' : ''}`;
+    const props = { file: f.file, line: f.line, col: f.col, endLine: f.endLine ?? f.line, endColumn: f.endCol ?? f.col, title };
     const text = `${f.message}${f.fix ? ` Fix: ${f.fix}` : ''}`;
     const propText = Object.entries(props).filter(([, v]) => v != null).map(([k, v]) => `${k}=${escapeProp(v)}`).join(',');
     return `::${annotationLevel(f)} ${propText}::${escapeData(text)}`;
@@ -134,11 +135,15 @@ function hash(text) {
   return h.toString(16).padStart(8, '0');
 }
 
-export function sarifReport(findings, { version = 'dev', rulesMeta = new Map() } = {}) {
+// A WCAG 3 draft run (standard set) files each rule under the draft
+// requirements its findings name, never under a WCAG 2 criterion, and
+// carries the draft stamp on the run.
+export function sarifReport(findings, { version = 'dev', rulesMeta = new Map(), standard = null } = {}) {
   const ruleIds = [...new Set(findings.map((f) => f.rule))].sort();
   const rules = ruleIds.map((id) => {
     const meta = rulesMeta.get(id) ?? findings.find((f) => f.rule === id);
     const sc = (meta.tags ?? []).map(toSc).filter(Boolean);
+    const draft = standard ? findings.find((f) => f.rule === id)?.sc ?? [] : [];
     return {
       id,
       name: meta.name ?? id,
@@ -148,7 +153,9 @@ export function sarifReport(findings, { version = 'dev', rulesMeta = new Map() }
       help: { text: `${meta.help ?? id}\n${meta.helpUrl ?? ''}`, markdown: `${meta.help ?? id}\n\n[Understanding](${meta.helpUrl ?? ''})` },
       defaultConfiguration: { level: ['critical', 'serious'].includes(meta.impact) ? 'error' : 'warning' },
       properties: {
-        tags: ['accessibility', ...sc.map((s) => `WCAG ${s}`), ...(meta.tags ?? []).filter((t) => /^wcag2|best-practice/.test(t))],
+        tags: standard
+          ? ['accessibility', 'WCAG 3 draft', ...draft.map((num) => `WCAG 3 draft ${num}`), ...(meta.tags ?? []).filter((t) => t === 'best-practice')]
+          : ['accessibility', ...sc.map((s) => `WCAG ${s}`), ...(meta.tags ?? []).filter((t) => /^wcag2|best-practice/.test(t))],
         impact: meta.impact,
       },
     };
@@ -172,7 +179,7 @@ export function sarifReport(findings, { version = 'dev', rulesMeta = new Map() }
       ...(f.target ? { logicalLocations: [{ name: f.target, kind: 'element' }] } : {}),
     }],
     partialFingerprints: { 'pour/finding/v1': hash(`${f.rule}|${f.file ?? f.url}|${f.html}`) },
-    properties: { impact: f.impact, status: f.kind, wcag: f.sc },
+    properties: { impact: f.impact, status: f.kind, ...(standard ? { wcag3: f.sc } : { wcag: f.sc }) },
   }));
   return {
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
@@ -181,6 +188,7 @@ export function sarifReport(findings, { version = 'dev', rulesMeta = new Map() }
       tool: { driver: { name: 'pour', version, informationUri: 'https://pour.dev/', rules } },
       results,
       columnKind: 'utf16CodeUnits',
+      ...(standard ? { properties: { standard: draftStamp(standard) } } : {}),
     }],
   };
 }

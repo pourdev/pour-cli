@@ -21,7 +21,7 @@
 //                                  # loads in; audit numbers are
 //                                  # state-dependent, so this changes them)
 //   pour <url> --bp                # include best-practice rules
-//   pour <url> --wcag3 silver      # a tier of the WCAG 3.0 Working Draft
+//   pour <url> --wcag3 core        # the WCAG 3.0 Working Draft's core requirements
 //   pour <url> --wait 2000         # extra settle time after load (ms)
 //   pour <url> --exclude ".ads"    # CSS selector to leave out of every rule
 //   pour <url> --fail-on none      # violations (default) | incomplete | none
@@ -62,7 +62,7 @@ import { fileURLToPath } from 'node:url';
 import {
   WCAG_TAGS, loadEngineSource, loadFiltersSource, listFilters, resolveFilter, normaliseUrl, parseViewport,
   loadPuppeteer, launchBrowser, openPage, isChallenge, scrollPage, runAudit, applyFilter, sortViolations, toSc,
-  IMPACT_ORDER, sleep, serveRoot,
+  IMPACT_ORDER, sleep, serveRoot, wcag3Set, wcag3Scope,
 } from './lib.mjs';
 import { makePaint, findingsFromResults, markdownReport } from './report.mjs';
 import { signIn, launchSignInBrowser, applyAuthState, applyBasicAuth, parseBasic, looksLikeSignIn } from './auth.mjs';
@@ -98,10 +98,11 @@ One page
   --timeout <ms>       navigation timeout (default 30000)
   --exclude <sel>      CSS selector excluded from every rule
   --bp                 include best-practice rules alongside WCAG A+AA
-  --wcag3 <tier>       bronze | silver | gold: audit against a tier of the
-                       WCAG 3.0 Working Draft instead of WCAG 2.2 A+AA
-                       (an unfinished standard: WCAG 2 rules matched to
-                       draft requirements, not for conformance claims)
+  --wcag3 <set>        core | supplemental: audit against the WCAG 3.0
+                       Working Draft's core requirements, or its core and
+                       supplemental ones, instead of WCAG 2.2 A+AA (an
+                       unfinished standard: WCAG 2 rules matched to draft
+                       requirements, not for conformance claims)
   --root <dir>         with a local .html file: the folder served as the site
                        root, for assets addressed from there (/css/site.css);
                        default the file's own folder
@@ -325,11 +326,11 @@ if (positional[0] === 'report') {
   if ([settleMs, timeoutMs, maxNodes].some(Number.isNaN)) fail('--wait, --timeout and --max-nodes expect numbers');
   const level = String(flags.get('level') ?? 'max');
   if (!['quiet', 'rules', 'max'].includes(level)) fail(`--level expects quiet | rules | max, got "${level}"`);
-  const wcag3 = flags.has('wcag3') ? String(flags.get('wcag3')).toLowerCase() : null;
-  if (wcag3 && !['bronze', 'silver', 'gold'].includes(wcag3)) fail(`--wcag3 expects bronze | silver | gold, got "${flags.get('wcag3')}"`);
+  const wcag3 = flags.has('wcag3') ? wcag3Set(flags.get('wcag3')) : null;
+  if (flags.has('wcag3') && !wcag3) fail(`--wcag3 expects core | supplemental, got "${flags.get('wcag3')}"`);
   const baseTags = wcag3 ? [`wcag3-${wcag3}`] : WCAG_TAGS;
   const tags = flags.has('bp') ? [...baseTags, 'best-practice'] : baseTags;
-  const scopeLabel = (wcag3 ? `WCAG 3.0 draft, ${wcag3[0].toUpperCase()}${wcag3.slice(1)} tier` : 'WCAG 2.2 A+AA')
+  const scopeLabel = (wcag3 ? `WCAG 3.0 draft, ${wcag3Scope(wcag3)}` : 'WCAG 2.2 A+AA')
     + (flags.has('bp') ? ' + best practices' : '');
   const format = String(flags.get('format') ?? (flags.has('json') ? 'json' : 'terminal'));
   if (!['terminal', 'json', 'markdown'].includes(format)) fail(`--format expects terminal | json | markdown for a URL audit, got "${format}"`);
