@@ -279,13 +279,13 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.135",
-  // Release: engine 1.46.0. The WCAG 3 draft mode checks the draft's core requirements, or its core and supplemental ones, in place of the Bronze, Silver and Gold tiers the draft sets above conformance; the draft note and link on every result; no share row under a draft audit; Focus Visible reads outline removals that name no focus state.
+  version: "1.2.136",
+  // Release: engine 1.46.1. Text contrast sends a failure to review when the section behind the text is still waiting for its lazy-loaded background image, and a consent dimmer faded to opacity 0 no longer counts as a veil. Was 1.2.135.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
-    version: "1.46.0"
-    // WCAG 3 draft check set tags (wcag3-core, wcag3-supplemental) replace the tier tags, which still select the rules they ran; results.standard carries checkSet and scope in place of tier and tierLabel; the checklist lists requirements, no assertions. Focus Visible reads outline removals in rules with no focus state and in style attributes (review only). WCAG 2 selection unchanged.
+    version: "1.46.1"
+    // lazyWithheldBackground (lib/contrast.js): a contrast failure goes to review when an element on the text's chain has a background image in the page's styles, a :not(.<lazy class>) rule sets background-image none on it, and it computes none. The veil checks read opacity 0 as 0 (was read as 1). Was 1.46.0.
   },
   extension: {
     // Appended to productName for the manifest name, which IS the store
@@ -619,6 +619,7 @@ var uncoveredEffectCache = /* @__PURE__ */ new WeakMap();
 var blendBackdropCache = /* @__PURE__ */ new WeakMap();
 var labelReferrersCache = /* @__PURE__ */ new WeakMap();
 var stackingContextCache = /* @__PURE__ */ new WeakMap();
+var backgroundRulesCache = /* @__PURE__ */ new WeakMap();
 var HAS_IMAGE = Symbol("background-image in chain");
 function labelReferrers(root, isInactive) {
   let referrers = labelReferrersCache.get(root);
@@ -1059,6 +1060,10 @@ function filmedContrastBounds(foreground, background, film) {
     crossed: sides[0] !== sides[1]
   };
 }
+var opacityOf = (style) => {
+  const opacity = parseFloat(style.opacity);
+  return Number.isNaN(opacity) ? 1 : opacity;
+};
 function scrimIn(layersAbove, element, win) {
   const rect = element.getBoundingClientRect();
   const found = [];
@@ -1066,7 +1071,7 @@ function scrimIn(layersAbove, element, win) {
     if (layer.contains(element) || element.contains(layer)) continue;
     const style = getComputedStyle(layer);
     const color = parseColor(style.backgroundColor);
-    const alpha = (color ? color.a : 0) * (parseFloat(style.opacity) || 1);
+    const alpha = (color ? color.a : 0) * opacityOf(style);
     const hasBackdropFilter = style.backdropFilter && style.backdropFilter !== "none";
     if (!hasBackdropFilter && (alpha < 0.15 || alpha >= 1)) continue;
     const r = layer.getBoundingClientRect();
@@ -1086,7 +1091,7 @@ function scrimPaint(layers) {
     if (style.backgroundImage !== "none") return null;
     const color = parseColor(style.backgroundColor);
     if (!color) return null;
-    const alpha = color.a * (parseFloat(style.opacity) || 1);
+    const alpha = color.a * opacityOf(style);
     if (alpha <= 0) continue;
     paints.push({ ...color, a: alpha });
   }
@@ -1168,7 +1173,7 @@ function opaquePanelRects(doc) {
           panelRectsCache.panels.push({ element: el, rect, color, hitTestBlind: style.pointerEvents === "none" });
         }
         if (!panelRectsCache.veil && (style.position === "fixed" || style.position === "sticky") && style.visibility !== "hidden") {
-          const alpha = (color ? color.a : 0) * (parseFloat(style.opacity) || 1);
+          const alpha = (color ? color.a : 0) * opacityOf(style);
           const hasBackdropFilter = style.backdropFilter && style.backdropFilter !== "none";
           const coversViewport = rect.width >= 0.9 * win.innerWidth && rect.height >= 0.9 * win.innerHeight;
           if (coversViewport && (hasBackdropFilter || alpha >= 0.15 && alpha < 1)) {
@@ -1707,6 +1712,61 @@ function rootHasFirstLineRules(root) {
   }
   firstLineRulesCache.set(root, has);
   return has;
+}
+var LAZY_EXCLUSION = /:not\(\s*\.[\w-]*lazy[\w-]*\s*\)/i;
+var PAINTS_IMAGE = /url\(|gradient\(|image-set\(|var\(/i;
+function backgroundRules(root) {
+  let found = backgroundRulesCache.get(root);
+  if (found) return found;
+  found = { gates: [], images: [] };
+  const win = (root.ownerDocument ?? root).defaultView;
+  const scan = (rules) => {
+    for (const rule of rules) {
+      if (rule.styleSheet) {
+        if (rule.media?.mediaText && !win.matchMedia(rule.media.mediaText).matches) continue;
+        try {
+          scan(rule.styleSheet.cssRules);
+        } catch {
+        }
+        continue;
+      }
+      if (rule.media) {
+        if (!win.matchMedia(rule.media.mediaText).matches) continue;
+      } else if (win.CSSSupportsRule && rule instanceof win.CSSSupportsRule) {
+        if (!win.CSS.supports(rule.conditionText)) continue;
+      }
+      if (rule.selectorText && rule.style) {
+        const image = rule.style.getPropertyValue("background-image").trim();
+        if (image === "none" && LAZY_EXCLUSION.test(rule.selectorText)) found.gates.push(rule.selectorText);
+        else if (PAINTS_IMAGE.test(image || rule.style.getPropertyValue("background"))) found.images.push(rule.selectorText);
+      }
+      if (rule.cssRules) scan(rule.cssRules);
+    }
+  };
+  for (const sheet of [...root.styleSheets ?? [], ...root.adoptedStyleSheets ?? []]) {
+    try {
+      scan(sheet.cssRules);
+    } catch {
+    }
+  }
+  backgroundRulesCache.set(root, found);
+  return found;
+}
+var matchesAny = (node, selectors) => selectors.some((selector) => {
+  try {
+    return node.matches(selector);
+  } catch {
+    return false;
+  }
+});
+function lazyWithheldBackground(element) {
+  for (let node = element; node?.nodeType === 1; node = flatParentOf(node)) {
+    const { gates, images } = backgroundRules(node.getRootNode());
+    if (!gates.length || !matchesAny(node, gates)) continue;
+    if (getComputedStyle(node).backgroundImage !== "none") continue;
+    if (PAINTS_IMAGE.test(node.style?.backgroundImage ?? "") || matchesAny(node, images)) return true;
+  }
+  return false;
 }
 function pseudoTextColors(element, style) {
   if (style.display === "inline" || style.display === "contents") return [];
@@ -3783,6 +3843,12 @@ function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
   rule.evaluate = async (element, helpers) => {
     const verdict = await judge(element, helpers);
     if (verdict.status !== "fail") return verdict;
+    if (lazyWithheldBackground(element)) {
+      return {
+        status: "incomplete",
+        message: "This text sits in a section whose background image is lazy-loaded and has not loaded yet, so it was measured against a background visitors never see. Scroll the page to this text and run the audit again, or check it by eye."
+      };
+    }
     const glyph = glyphNotWords(element, helpers.ownText(element), helpers.accessibleName);
     if (glyph) {
       const ratio = verdict.data?.ratio;
