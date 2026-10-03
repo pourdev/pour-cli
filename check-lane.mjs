@@ -1,4 +1,4 @@
-/*! pour check lane 1.46.1 | MIT | https://pour.dev */
+/*! pour check lane 1.46.2 | MIT | https://pour.dev */
 
 // src/vscode/audit.js
 import jsdom from "jsdom";
@@ -109,12 +109,12 @@ function siblingPosition(element, index) {
   if (!positions) {
     const counts = /* @__PURE__ */ new Map();
     positions = /* @__PURE__ */ new WeakMap();
-    for (const child of parent.children) {
+    for (const child of childrenOf(parent)) {
       const position = (counts.get(child.tagName) ?? 0) + 1;
       counts.set(child.tagName, position);
       positions.set(child, { position, repeated: false });
     }
-    for (const child of parent.children) positions.get(child).repeated = counts.get(child.tagName) > 1;
+    for (const child of childrenOf(parent)) positions.get(child).repeated = counts.get(child.tagName) > 1;
     index.parents.set(parent, positions);
   }
   return positions.get(element);
@@ -155,6 +155,14 @@ function attributesOf(element) {
   const own = element.attributes;
   if (own && typeof own.length === "number" && typeof own.item === "function") return own;
   return attributesGetter ? attributesGetter.call(element) : [];
+}
+var childrenGetter = typeof Element !== "undefined" ? Object.getOwnPropertyDescriptor(Element.prototype, "children")?.get : null;
+function childrenOf(element) {
+  return childrenGetter ? childrenGetter.call(element) : element.children;
+}
+var nodeContains = typeof Node !== "undefined" ? Node.prototype.contains : null;
+function containsNode(ancestor, node) {
+  return nodeContains ? nodeContains.call(ancestor, node) : ancestor.contains(node);
 }
 function htmlSnippet(element, maxLength = 300) {
   let html = `<${element.tagName.toLowerCase()}`;
@@ -667,7 +675,7 @@ function backgroundObscured(element) {
   const start = stack.indexOf(element);
   if (start === -1) return "unverifiable";
   for (const layer of stack.slice(start + 1)) {
-    if (layer.contains(element)) {
+    if (containsNode(layer, element)) {
       const style = getComputedStyle(layer);
       if (style.backgroundImage !== "none") return layer;
       const bg = parseColor(style.backgroundColor);
@@ -847,7 +855,7 @@ function scrimIn(layersAbove, element, win) {
   const rect = element.getBoundingClientRect();
   const found = [];
   for (const layer of layersAbove) {
-    if (layer.contains(element) || element.contains(layer)) continue;
+    if (containsNode(layer, element) || containsNode(element, layer)) continue;
     const style = getComputedStyle(layer);
     const color = parseColor(style.backgroundColor);
     const alpha = (color ? color.a : 0) * opacityOf(style);
@@ -909,7 +917,7 @@ function paintedBackdrop(element) {
   }
   const layers = [];
   for (const layer of stack.slice(start + 1)) {
-    while (missing.length && !missing[0].contains(layer)) layers.push(missing.shift());
+    while (missing.length && !containsNode(missing[0], layer)) layers.push(missing.shift());
     layers.push(layer);
   }
   layers.push(...missing);
@@ -1126,7 +1134,7 @@ function beneathOpaqueAncestor(element, media) {
   if (inTopLayer(element) || inTopLayer(media)) return false;
   const box = element.getBoundingClientRect();
   for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
-    if (ancestor.contains(media)) return false;
+    if (containsNode(ancestor, media)) return false;
     if (!createsStackingContext(ancestor)) continue;
     const style = getComputedStyle(ancestor);
     const color = parseColor(style.backgroundColor);
@@ -1137,7 +1145,7 @@ function beneathOpaqueAncestor(element, media) {
     if (!/^(border-box|padding-box)$/.test(style.backgroundClip)) continue;
     if (!insideRoundedBox(box, ancestor.getBoundingClientRect(), style)) continue;
     let shared = ancestor.parentElement;
-    while (shared && !(createsStackingContext(shared) && shared.contains(media))) shared = shared.parentElement;
+    while (shared && !(createsStackingContext(shared) && containsNode(shared, media))) shared = shared.parentElement;
     if (!shared) return false;
     const over = paintRank(ancestor, shared);
     const under = paintRank(media, shared);
@@ -1148,7 +1156,7 @@ function beneathOpaqueAncestor(element, media) {
     return Boolean(
       under.node.compareDocumentPosition(over.node) & 4
       /* FOLLOWING */
-    ) && !under.node.contains(over.node);
+    ) && !containsNode(under.node, over.node);
   }
   return false;
 }
@@ -2822,7 +2830,7 @@ function coveredByTextTwin(element) {
   const stack = doc.elementsFromPoint(x, y);
   const index = stack.indexOf(element);
   if (index <= 0) return false;
-  return stack.slice(0, index).some((layer) => !layer.contains(element) && !element.contains(layer) && layer.textContent.trim() === text);
+  return stack.slice(0, index).some((layer) => !containsNode(layer, element) && !containsNode(element, layer) && layer.textContent.trim() === text);
 }
 function textIntersects(element, rect) {
   const box = element.getBoundingClientRect();
@@ -2915,7 +2923,7 @@ function unaccountedScrim(element, imageCarrier) {
   const start = stack.indexOf(element);
   if (start === -1) return false;
   return stack.slice(start + 1).some((layer) => {
-    if (layer.contains(element) || layer === imageCarrier) return false;
+    if (containsNode(layer, element) || layer === imageCarrier) return false;
     const color = parseColor(getComputedStyle(layer).backgroundColor);
     return color && color.a > 0;
   });
@@ -2932,7 +2940,7 @@ function coveringLayer(element, imageCarrier) {
   const overlays = [];
   for (const layer of stack.slice(start + 1)) {
     if (layer === imageCarrier) return null;
-    if (layer.contains(element)) {
+    if (containsNode(layer, element)) {
       const own = parseColor(getComputedStyle(layer).backgroundColor);
       if (own && own.a > 0 && own.a < 1) overlays.push(own);
       continue;
@@ -2950,7 +2958,7 @@ function positionedPaintInside(carrier, element) {
   const point = textSamplePoint(element);
   if (!point) return false;
   for (const node of carrier.querySelectorAll("*")) {
-    if (node.contains(element) || element.contains(node)) continue;
+    if (containsNode(node, element) || containsNode(element, node)) continue;
     const style = getComputedStyle(node);
     if (style.position !== "absolute" && style.position !== "fixed") continue;
     const paints = style.backgroundImage !== "none" && !paintsNothing(style.backgroundImage) || (parseColor(style.backgroundColor)?.a ?? 0) >= 1;
@@ -3146,7 +3154,7 @@ function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
       }
       let foreground = fill && style.webkitTextFillColor !== style.color ? fill : parseColor(style.color);
       if (textVisuallyHidden(element, style, foreground)) return { status: "pass" };
-      const ownMultiply = style.mixBlendMode === "multiply" && styleSource === element && !element.children.length && !element.shadowRoot && parseColor(style.backgroundColor)?.a === 0 && style.backgroundImage === "none" && style.filter === "none" && (!style.backdropFilter || style.backdropFilter === "none") && (!style.textShadow || style.textShadow === "none") && !hasPaintEffects(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host) && !isolatedBlendBackdrop(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host) && !["::before", "::after"].some((pseudo) => {
+      const ownMultiply = style.mixBlendMode === "multiply" && styleSource === element && !childrenOf(element).length && !element.shadowRoot && parseColor(style.backgroundColor)?.a === 0 && style.backgroundImage === "none" && style.filter === "none" && (!style.backdropFilter || style.backdropFilter === "none") && (!style.textShadow || style.textShadow === "none") && !hasPaintEffects(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host) && !isolatedBlendBackdrop(element.assignedSlot ?? element.parentElement ?? element.getRootNode()?.host) && !["::before", "::after"].some((pseudo) => {
         const pseudoStyle = getComputedStyle(element, pseudo);
         const content = pseudoStyle.content;
         const bareJoiner = (content === '"\u2060"' || content === "'\u2060'") && pseudoStyle.display === "inline" && pseudoStyle.position === "static" && pseudoStyle.cssFloat === "none" && parseColor(pseudoStyle.backgroundColor)?.a === 0 && ["backgroundImage", "boxShadow", "textShadow", "transform", "filter", "backdropFilter", "maskImage", "webkitMaskImage"].every((key) => !pseudoStyle[key] || pseudoStyle[key] === "none") && ["Top", "Right", "Bottom", "Left"].every((side) => parseFloat(pseudoStyle[`padding${side}`]) === 0 && parseFloat(pseudoStyle[`border${side}Width`]) === 0) && pseudoStyle.outlineStyle === "none" && (!pseudoStyle.mixBlendMode || pseudoStyle.mixBlendMode === "normal");
@@ -3213,14 +3221,14 @@ function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
           const groupRatio = contrastRatio(group.foreground, group.background);
           const groupRect = element.getBoundingClientRect();
           const near = (r) => Math.min(groupRect.right, r.right) - Math.max(groupRect.left, r.left) >= 3 && Math.min(groupRect.bottom, r.bottom) - Math.max(groupRect.top, r.top) >= 3;
-          const overMedia = mediaRects(doc).some(({ element: media, rect: mediaRect }) => near(mediaRect) && !media.contains(element) && !element.contains(media) && textIntersects(element, mediaRect));
+          const overMedia = mediaRects(doc).some(({ element: media, rect: mediaRect }) => near(mediaRect) && !containsNode(media, element) && !containsNode(element, media) && textIntersects(element, mediaRect));
           if (overMedia) {
             return {
               status: "incomplete",
               message: "This text overlaps an image or video, so its real background can\u2019t be computed \u2014 contrast must be checked by eye."
             };
           }
-          const flipping = opaquePanelRects(doc).some(({ element: panel, rect: rect2, color }) => near(rect2) && !panel.contains(element) && !element.contains(panel) && textIntersects(element, rect2) && contrastRatio(composite(group.text, color), composite(group.paint, color)) >= required !== groupRatio >= required);
+          const flipping = opaquePanelRects(doc).some(({ element: panel, rect: rect2, color }) => near(rect2) && !containsNode(panel, element) && !containsNode(element, panel) && textIntersects(element, rect2) && contrastRatio(composite(group.text, color), composite(group.paint, color)) >= required !== groupRatio >= required);
           if (flipping) {
             return {
               status: "incomplete",
@@ -3231,7 +3239,7 @@ function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
           let groupScrim = groupPainted?.scrim ?? null;
           if (!groupScrim && groupPainted === "offscreen") {
             const veil = viewportVeil(doc);
-            if (veil && !veil.contains(element)) groupScrim = [veil];
+            if (veil && !containsNode(veil, element)) groupScrim = [veil];
           }
           if (groupScrim) {
             const groupVeil = scrimPaint(groupScrim);
@@ -3317,7 +3325,7 @@ function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
       let scrimLayers = painted?.scrim ?? null;
       if (!scrimLayers && painted === "offscreen") {
         const veil = viewportVeil(doc);
-        if (veil && !veil.contains(element)) scrimLayers = [veil];
+        if (veil && !containsNode(veil, element)) scrimLayers = [veil];
       }
       if (scrimLayers) {
         veilPaint = scrimPaint(scrimLayers);
@@ -3467,14 +3475,14 @@ function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
         if (ownPaint && ownPaint.a >= 1) return null;
         const box = element.getBoundingClientRect();
         const near = (r) => Math.min(box.right, r.right) - Math.max(box.left, r.left) >= 3 && Math.min(box.bottom, r.bottom) - Math.max(box.top, r.top) >= 3;
-        const overMedia = mediaRects(doc).some(({ element: media, rect: mediaRect, hitTestBlind }) => (!blindOnly || hitTestBlind) && near(mediaRect) && !media.contains(element) && !element.contains(media) && textIntersects(element, mediaRect) && !beneathOpaqueAncestor(element, media));
+        const overMedia = mediaRects(doc).some(({ element: media, rect: mediaRect, hitTestBlind }) => (!blindOnly || hitTestBlind) && near(mediaRect) && !containsNode(media, element) && !containsNode(element, media) && textIntersects(element, mediaRect) && !beneathOpaqueAncestor(element, media));
         if (overMedia) {
           return {
             status: "incomplete",
             message: "This text overlaps an image or video, so its real background can\u2019t be computed \u2014 contrast must be checked by eye."
           };
         }
-        const flipping = opaquePanelRects(doc).some(({ element: panel, rect: rect2, color, hitTestBlind }) => (!blindOnly || hitTestBlind) && near(rect2) && !panel.contains(element) && !element.contains(panel) && textIntersects(element, rect2) && (ownMultiply || contrastRatio(foreground, color) >= required !== (direction === "pass")));
+        const flipping = opaquePanelRects(doc).some(({ element: panel, rect: rect2, color, hitTestBlind }) => (!blindOnly || hitTestBlind) && near(rect2) && !containsNode(panel, element) && !containsNode(element, panel) && textIntersects(element, rect2) && (ownMultiply || contrastRatio(foreground, color) >= required !== (direction === "pass")));
         if (flipping) {
           return {
             status: "incomplete",
@@ -3496,7 +3504,7 @@ function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
             const inside = block.querySelectorAll("*");
             if (inside.length <= 2e3) {
               for (const sibling of inside) {
-                if (sibling === element || sibling.contains(element) || element.contains(sibling)) continue;
+                if (sibling === element || containsNode(sibling, element) || containsNode(element, sibling)) continue;
                 const siblingStyle = getComputedStyle(sibling);
                 if (siblingStyle.position !== "static" || siblingStyle.visibility === "hidden") continue;
                 const paint = parseColor(siblingStyle.backgroundColor);
@@ -4000,7 +4008,7 @@ var aria_hidden_focus_default = {
     } catch {
     }
     modal ??= [...doc.querySelectorAll('[aria-modal="true"]')].find(isRendered2) ?? null;
-    if (modal && !element.contains(modal) && !modal.contains(element)) {
+    if (modal && !containsNode(element, modal) && !containsNode(modal, element)) {
       return {
         status: "incomplete",
         message: `This aria-hidden element contains ${focusable.length} focusable element(s) while a modal dialog is open \u2014 fine if the modal traps keyboard focus, a failure if Tab can reach them. Check the trap by keyboard.`
@@ -4163,7 +4171,7 @@ var bypass_blocks_default = {
 // src/engine/rules/wcag/2.5.8-target-size.js
 var TARGETS = 'a[href], button, input, select, [role="button"], [role="link"]';
 function containsComposed(ancestor, element) {
-  if (ancestor.contains(element)) return true;
+  if (containsNode(ancestor, element)) return true;
   if (ancestor.getRootNode() === element.getRootNode() && !element.assignedSlot) return false;
   for (let node = element; node; node = node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host) {
     if (node === ancestor) return true;
@@ -4215,7 +4223,7 @@ function reachableRects(element, rect) {
       continue;
     }
     testable = true;
-    if (stack.slice(0, index).every((layer) => layer.contains(element) || element.contains(layer))) {
+    if (stack.slice(0, index).every((layer) => containsNode(layer, element) || containsNode(element, layer))) {
       reachable.push(fragment);
     }
   }
@@ -4391,8 +4399,8 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
         const y = overlap.top + overlap.height / 2;
         if (!win || typeof doc.elementsFromPoint !== "function" || x < 0 || y < 0 || x >= win.innerWidth || y >= win.innerHeight) return false;
         for (const layer of doc.elementsFromPoint(x, y)) {
-          const inJ = elements[j] === layer || elements[j].contains(layer);
-          const inI = elements[i] === layer || elements[i].contains(layer);
+          const inJ = elements[j] === layer || containsNode(elements[j], layer);
+          const inI = elements[i] === layer || containsNode(elements[i], layer);
           if (inJ && !inI) return true;
           if (inI && !inJ) return false;
         }
@@ -4446,7 +4454,7 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
       const calculateObscuredRect = (i) => {
         let areas = null;
         for (const j of nearbyCandidates(i)) {
-          if (elements[j].contains(elements[i]) || elements[i].contains(elements[j])) continue;
+          if (containsNode(elements[j], elements[i]) || containsNode(elements[i], elements[j])) continue;
           if (encloses(rects[j], rects[i]) || encloses(rects[i], rects[j])) continue;
           if (typeof elements[i].href === "string" && elements[i].href === elements[j].href) continue;
           const overlap = overlapOf(rects[i], rects[j]);
@@ -5677,7 +5685,7 @@ var link_in_text_block_default = {
       const range = element.ownerDocument.createRange();
       let sharesLine = false;
       for (let node = walker.nextNode(); node && !sharesLine; node = walker.nextNode()) {
-        if (!node.textContent.trim() || element.contains(node)) continue;
+        if (!node.textContent.trim() || containsNode(element, node)) continue;
         range.selectNodeContents(node);
         for (const r of range.getClientRects()) {
           if (r.width > 0 && mids.some((mid) => r.top <= mid && r.bottom >= mid)) {
@@ -5834,7 +5842,7 @@ var aria_required_children_default = {
     const role = effectiveRole(element);
     const required = REQUIRED_CHILDREN[role];
     if (!required) return { status: "pass" };
-    const children = [...element.children, ...element.shadowRoot?.children ?? []].filter((c) => !c.matches("script, style, template"));
+    const children = [...childrenOf(element), ...element.shadowRoot?.children ?? []].filter((c) => !c.matches("script, style, template"));
     if (!children.length && !element.hasAttribute("aria-owns")) return { status: "pass" };
     if (candidateDescendants(element).some((child) => required.includes(roleOf(child)) && exposedChild(child, isVisible2))) {
       return { status: "pass" };
@@ -6543,7 +6551,7 @@ function createFocusObscuredRule({ id, name, tags, help, helpUrl, partial }) {
         const index = stack.indexOf(element);
         if (index <= 0) return null;
         const above = stack.slice(0, index);
-        return above.find((layer) => !layer.contains(element) && !element.contains(layer) && isObscuringOverlay(layer) && (partial ? overlaps : contained)(rect, layer.getBoundingClientRect())) ?? null;
+        return above.find((layer) => !containsNode(layer, element) && !containsNode(element, layer) && isObscuringOverlay(layer) && (partial ? overlaps : contained)(rect, layer.getBoundingClientRect())) ?? null;
       };
       return elements.map((element) => {
         if (element.matches(":disabled")) return { status: "pass" };
@@ -6702,7 +6710,7 @@ function pauseControlFor(video, isVisible2) {
     if (control.disabled || !isVisible2(control)) continue;
     for (const id of control.getAttribute("aria-controls").split(/\s+/)) {
       const target = id && byId(id);
-      if (target && (target === video || target.contains(video))) return control;
+      if (target && (target === video || containsNode(target, video))) return control;
     }
   }
   return null;
@@ -7432,7 +7440,7 @@ var section_heading_default = {
     }
     const item = element.closest("article");
     if (item && item.parentElement && !item.querySelector(HEADING)) {
-      const items = (node) => [...node.children].filter((child) => child.matches("article") || child.querySelector(":scope > article")).length;
+      const items = (node) => [...childrenOf(node)].filter((child) => child.matches("article") || child.querySelector(":scope > article")).length;
       const container = item.parentElement;
       if (items(container) >= 3 || container.parentElement && items(container.parentElement) >= 3) return { status: "pass" };
     }
@@ -8267,7 +8275,7 @@ var fieldset_legend_default = {
       const first = elements[indexes[0]];
       const group = first.closest('fieldset, [role="group"], [role="radiogroup"]');
       const legend = group?.querySelector(":scope > legend");
-      const grouped = group && indexes.every((index) => group.contains(elements[index])) && (legend && accessibleName(legend) || labelledByName(group) || group.getAttribute("aria-label")?.trim());
+      const grouped = group && indexes.every((index) => containsNode(group, elements[index])) && (legend && accessibleName(legend) || labelledByName(group) || group.getAttribute("aria-label")?.trim());
       if (grouped) continue;
       outcomes[indexes[0]] = {
         status: "fail",
