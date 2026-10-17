@@ -279,8 +279,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.137",
-  // Release: engine 1.46.2. A form field named children or contains no longer stops the audit of its page. Was 1.2.136.
+  version: "1.2.139",
+  // Release: findings read problem first in one plate, a severity chip shows that severity alone, and AI explain answers from the browser's on-device model when the reader turns it on. Engine stays 1.46.2. Was 1.2.138.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",

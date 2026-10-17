@@ -30,6 +30,7 @@ pour <url | file.html> [options]        one page
 pour report <url | list.csv> [options]  a site, or a list of domains (see below)
 pour check <files, folders or globs>    files on disk, no browser (see below)
 pour mcp                                browser tools for an AI agent (see below)
+pour skill [install]                    teach a coding agent to use pour (see below)
 
 One page
   --viewport WxH       viewport (default 1440x900); a bare width implies x900
@@ -286,6 +287,32 @@ The server loads `http` and `https` and nothing else. `file://` is refused
 there, though the command still takes it: an agent chooses the addresses it
 asks for, often from a page it has just read, and the disk is not a web
 page.
+
+### The skill
+
+The tools say what fails; the skill tells an agent what to do about it. It
+is an [Agent Skill](https://agentskills.io), one `SKILL.md`: check source
+files first and the rendered page after, note the viewport and scroll state
+with every figure, fix in the source and audit again, keep the findings that
+need review apart from the violations, never hide a finding with
+`aria-hidden` or an exclusion, and never call a page compliant because a run
+came back clean.
+
+```sh
+pour skill install           # .agents/skills/pour/, and .claude/skills/pour/
+                             # when the project has a .claude folder
+pour skill install --global  # the same, in your home folder
+pour skill                   # print it
+```
+
+An install never overwrites a copy that has been edited; `--force` does.
+
+In Claude Code, the plugin brings the skill and the MCP server together,
+and runs the server through `npx`, so nothing else has to be installed:
+
+```
+/plugin install pour --marketplace pourdev/pour-cli
+```
 
 ## License
 

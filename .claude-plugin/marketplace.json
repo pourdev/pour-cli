@@ -1,0 +1,15 @@
+{
+  "name": "pour",
+  "owner": {
+    "name": "pour",
+    "url": "https://pour.dev"
+  },
+  "description": "pour, the accessibility toolkit, for coding agents.",
+  "plugins": [
+    {
+      "name": "pour",
+      "source": "./",
+      "description": "Accessibility checks for coding agents: the pour engine audits pages and UI source against WCAG 2.2, and a skill shows the agent how to fix what it finds without hiding it."
+    }
+  ]
+}

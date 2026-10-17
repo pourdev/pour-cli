@@ -54,8 +54,9 @@
 //               and puppeteer-core drives the system Chrome (no 170MB
 //               browser download on install).
 // Both paths are resolved at runtime in lib.mjs; keep changes working in both.
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +91,7 @@ Usage: pour <url | file.html> [options]        one page
        pour report <url | list.csv> [options]  a site, or a list of domains
        pour check <files, folders or globs>    files on disk, no browser
        pour mcp                                browser tools for an AI agent
+       pour skill [install]                    teach a coding agent to use pour
 
 One page
   --viewport WxH       viewport (default 1440x900); a bare width implies x900
@@ -186,6 +188,17 @@ pour mcp
   POUR_MCP_ROOT names a different one. file: URLs are refused there: a model
   chooses those addresses, and the disk is not a web page. --browser applies.
 
+pour skill [install]
+  The Agent Skill that teaches a coding agent to use pour: when to audit,
+  how violations differ from findings that need review, and how to fix a
+  finding without hiding it. Bare, it prints the skill's SKILL.md. install
+  writes it to .agents/skills/pour/ in the current folder, where most coding
+  agents look, and to .claude/skills/pour/ when the folder has a .claude
+  directory.
+  --global             the home folder instead of the current one
+  --to <dir>           a skills folder of your choosing instead of both
+  --force              replace a SKILL.md that differs from this version's
+
 Exit codes: 0 clean, 1 findings (per --fail-on), 2 error`;
 
 if (flags.has('help') || (!positional.length && !argv.length)) {
@@ -220,6 +233,47 @@ if (positional[0] === 'mcp') {
     version: packageVersion()?.split(' ')[1] ?? 'dev',
     executablePath: flags.get('browser') ? String(flags.get('browser')) : undefined,
   });
+  process.exit(0);
+}
+
+// `pour skill`: the Agent Skill (skills/pour/SKILL.md beside this script in
+// both homes), printed, or installed where coding agents look for skills:
+// .agents/skills is the folder most agents share, .claude/skills is Claude
+// Code's own. A copy someone has edited is never overwritten unasked.
+if (positional[0] === 'skill') {
+  const action = positional[1];
+  if (positional.length > 2 || (action && action !== 'install')) fail(`pour skill takes one word, install\n\n${usage}`);
+  for (const name of flags.keys()) {
+    if (!action || !['global', 'to', 'force'].includes(name)) fail(`pour skill${action ? ' install' : ''} does not take --${name}`);
+  }
+  const source = path.join(scriptDir, 'skills', 'pour', 'SKILL.md');
+  if (!existsSync(source)) fail('this build does not carry the skill');
+  const skill = readFileSync(source, 'utf8');
+  if (!action) {
+    process.stdout.write(skill);
+    process.exit(0);
+  }
+  if (flags.get('to') === true) fail('--to needs a folder');
+  const base = flags.has('global') ? os.homedir() : process.cwd();
+  const folders = flags.has('to')
+    ? [path.resolve(String(flags.get('to')))]
+    : [path.join(base, '.agents', 'skills'), ...(existsSync(path.join(base, '.claude')) ? [path.join(base, '.claude', 'skills')] : [])];
+  const shown = (file) => {
+    const relative = path.relative(process.cwd(), file);
+    return relative.startsWith('..') ? file : relative;
+  };
+  const kept = [];
+  for (const folder of folders) {
+    const file = path.join(folder, 'pour', 'SKILL.md');
+    if (existsSync(file)) {
+      if (readFileSync(file, 'utf8') === skill) { console.log(`${shown(file)} is already this version`); continue; }
+      if (!flags.has('force')) { kept.push(shown(file)); continue; }
+    }
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, skill);
+    console.log(`wrote ${shown(file)}`);
+  }
+  if (kept.length) fail(`${kept.join(' and ')} ${kept.length === 1 ? 'differs' : 'differ'} from this version's skill and ${kept.length === 1 ? 'was' : 'were'} left alone; --force replaces ${kept.length === 1 ? 'it' : 'them'}`);
   process.exit(0);
 }
 

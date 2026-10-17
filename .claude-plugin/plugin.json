@@ -1,0 +1,16 @@
+{
+  "name": "pour",
+  "description": "Accessibility checks for coding agents: the pour engine audits pages and UI source against WCAG 2.2, and a skill shows the agent how to fix what it finds without hiding it.",
+  "author": {
+    "name": "pour",
+    "url": "https://pour.dev"
+  },
+  "homepage": "https://pour.dev",
+  "repository": "https://github.com/pourdev/pour-cli",
+  "license": "MIT",
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "wcag"
+  ]
+}

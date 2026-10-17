@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "pour": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "pour-cli",
+        "mcp"
+      ]
+    }
+  }
+}
