@@ -4,7 +4,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "pour-cli",
+        "pour-cli@0.3.29",
         "mcp"
       ]
     }
