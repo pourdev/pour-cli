@@ -279,8 +279,8 @@ var project_config_default = {
   // bookmarklet or engine work gets its number at the point he decides to
   // upload, so every uploadable build has its own; site-only changes ship
   // with no bump at all.
-  version: "1.2.139",
-  // Release: findings read problem first in one plate, a severity chip shows that severity alone, and AI explain answers from the browser's on-device model when the reader turns it on. Engine stays 1.46.2. Was 1.2.138.
+  version: "1.2.140",
+  // Release: AI explain answers on every press, shows Loading the model until its first words, and writes one answer at a time. Engine stays 1.46.2. Was 1.2.139.
   // Our own accessibility engine (src/engine/) — the product's only engine.
   engine: {
     name: "pour engine",
@@ -9571,6 +9571,15 @@ main{display:block}
 .docs{max-width:calc(var(--measure) + 2*var(--gutter));margin-inline:auto;padding:clamp(3.8rem,7.5vh,5.6rem) var(--gutter) 0}
 .intro{padding-top:clamp(4.5rem,9vh,7rem)}
 .eyebrow{font-family:var(--font);font-size:.8rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 1.2rem}
+.months{display:inline-block;position:relative}
+.months>summary{display:inline-flex;align-items:center;gap:.5em;list-style:none;cursor:pointer;color:var(--text);border-radius:4px}
+.months>summary::-webkit-details-marker{display:none}
+.months>summary::after{content:'';width:5px;height:5px;margin-top:-3px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg)}
+.months[open]>summary::after{margin-top:3px;transform:rotate(225deg)}
+.months ul{position:absolute;z-index:20;top:calc(100% + .5rem);left:-.6rem;min-width:12rem;margin:0;padding:.35rem;list-style:none;background:var(--surface);border:1px solid var(--hair2);border-radius:8px;box-shadow:var(--shadow)}
+.months a{display:block;padding:.55rem .6rem;border-radius:5px;color:var(--muted);text-decoration:none;white-space:nowrap}
+.months a[aria-current]{color:var(--text)}
+.months a:hover,.months a[aria-current]:hover{background:var(--text);color:var(--bg)}
 h1{font:620 clamp(2.2rem,4.6vw,3.6rem)/1.05 var(--font);letter-spacing:-.02em;margin:0}
 h2{font:600 clamp(1.55rem,2.8vw,2.2rem)/1.15 var(--font);letter-spacing:-.015em;margin:0}
 .lede{margin:1.5rem 0 0;font-size:1.125rem;color:var(--muted)}
@@ -9819,7 +9828,7 @@ function shell({ title, description, eyebrow, heading, lede, nav, stats, viz = "
   </header>
   <main id="main">
     <section class="docs intro" aria-labelledby="title">
-      <p class="eyebrow">${eyebrow}</p>
+      <div class="eyebrow">${eyebrow}</div>
       <h1 id="title">${heading}</h1>
       <p class="lede">${lede}</p>
     </section>
@@ -9924,6 +9933,13 @@ ${body}
       toggle.addEventListener('click', function () { setOpen(!menu.classList.contains('open')); });
       menu.addEventListener('click', function (e) { if (e.target.closest('a')) setOpen(false); });
       document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setOpen(false); });
+    }
+    // The month list closes on Escape, returning focus to its summary, and
+    // on a click anywhere outside it.
+    var months = document.querySelector('details.months');
+    if (months) {
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && months.open) { months.open = false; months.querySelector('summary').focus(); } });
+      document.addEventListener('click', function (e) { if (months.open && !months.contains(e.target)) months.open = false; });
     }
   })();
   // The report reads itself aloud with the Speech Synthesis API, one
@@ -10399,6 +10415,17 @@ async function render(runDir2, { publicCopy = true } = {}) {
   const s = summarize(tally2, { minGroup: 10 });
   const rows = [...held.values()];
   const summaryFile = path4.join(runDir2, "summary.json");
+  if (status.mode === "top") {
+    const prior2 = previousMonth(runDir2, status.month);
+    const priorRows = prior2 ? path4.join(path4.dirname(runDir2), prior2.month, "progress.jsonl") : null;
+    if (priorRows && fs4.existsSync(priorRows)) s.change = compareMonths(await auditedByDomain(priorRows), latest.values(), prior2);
+    else if (fs4.existsSync(summaryFile)) {
+      try {
+        s.change = JSON.parse(fs4.readFileSync(summaryFile, "utf8")).change;
+      } catch {
+      }
+    }
+  }
   fs4.writeFileSync(summaryFile, JSON.stringify({ ...s, recent: void 0, meta: { ...status, summary: void 0, inflight: void 0, backoffs: void 0 } }, null, 2));
   const generated = (/* @__PURE__ */ new Date()).toISOString();
   const runDate = longDate(generated);
@@ -10573,7 +10600,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
       const listName = top ? `${topLabel} on ${crux ? "the Chrome UX Report's list of most visited sites" : "the Tranco ranking"}` : escapeHtml(status.list?.file ?? "the list");
       const tierLabel = (b) => b.tier != null ? `top ${int(b.tier)}` : b.rank != null ? int(b.rank) : "";
       heading = top ? `The pour ${int(status.topN ?? status.total)}.` : `${escapeHtml(status.label)}, audited.`;
-      eyebrow = `${top ? `Monthly study \xB7 ${escapeHtml(monthName(status.month))}` : `List audit \xB7 ${escapeHtml(runDate)}`}${partial ? " \xB7 in progress" : ""}`;
+      eyebrow = `${top ? `Monthly study \xB7 ${monthSwitcher(path4.dirname(runDir2), status.month, publicPage)}` : `List audit \xB7 ${escapeHtml(runDate)}`}${partial ? " \xB7 in progress" : ""}`;
       title = top ? `The pour ${int(status.topN ?? status.total)}: the top sites, audited \xB7 ${monthName(status.month)}` : `${status.label}, audited \xB7 pour`;
       description = top ? `The pour engine ran over the top ${int(status.topN ?? status.total)} sites: ${dec(s.failingPct)}% have proven accessibility failures, ${dec(s.meanFailing)} failing elements on the average site.` : `The pour engine over ${int(s.pages)} sites from ${listName}: how many fail WCAG 2.2 AA and what fails most.`;
       const previous = top ? previousMonth(runDir2, status.month) : null;
@@ -10584,8 +10611,8 @@ async function render(runDir2, { publicCopy = true } = {}) {
           Each site was loaded once in a desktop window and checked against WCAG&nbsp;2.2 AA.
           No scrolling, no clicking, one page per site. The numbers count what the engine could prove;
           checks that need a person are not included.${partial ? ` The run is not finished: ${int(s.pages)} of ${int(status.count ?? status.total)} pages so far.` : ""}
-          ${previous ? `Since ${escapeHtml(monthName(previous.month))}: ${delta(previous.failingPct, s.failingPct, "points")} in pages with a failure, ${delta(previous.meanFailing, s.meanFailing, "")} in failing elements per page.` : ""}`;
-      nav = [...COMMON_NAV, ...s.byTier.length > 1 ? [{ id: "tiers", label: "By popularity" }] : [], { id: "breadth", label: "By breadth" }, { id: "consent", label: "By consent" }, { id: "groups", label: "By language" }, { id: "ends", label: "Site scores" }, ...rows.length && !publicPage ? [{ id: "every", label: "Every page" }] : [], { id: "months", label: "Month by month" }, { id: "method", label: "Method" }, { id: "review", label: "Not sure" }, { id: "limits", label: "Limits" }];
+          ${previous ? `Since ${escapeHtml(monthName(previous.month))}: ${delta(previous.failingPct, s.failingPct, "points")} in pages with a failure, ${delta(previous.meanFailing, s.meanFailing, "")} in failing elements per page${s.change ? ' (<a href="#changed">what changed</a>)' : ""}.` : ""}`;
+      nav = [...s.change && previous ? [{ id: "changed", label: "What changed" }] : [], ...COMMON_NAV, ...s.byTier.length > 1 ? [{ id: "tiers", label: "By popularity" }] : [], { id: "breadth", label: "By breadth" }, { id: "consent", label: "By consent" }, { id: "groups", label: "By language" }, { id: "ends", label: "Site scores" }, ...rows.length && !publicPage ? [{ id: "every", label: "Every page" }] : [], { id: "months", label: "Month by month" }, { id: "method", label: "Method" }, { id: "review", label: "Not sure" }, { id: "limits", label: "Limits" }];
       extraSections = `${s.byTier.length > 1 ? `
       <section class="docs" id="tiers" aria-labelledby="tiers-title">
         <h2 id="tiers-title">By popularity</h2>
@@ -10682,7 +10709,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
       // quote (David, 2026-10-03).
       stats: [[`${dec(s.failingPct)}%`, s.pages === 1 ? `of the one ${what.slice(0, -1)} audited has proven accessibility failures` : `of the ${int(s.pages)} ${what} audited have proven accessibility failures`], [int(s.worst?.find((x) => x.impact === "critical")?.pages ?? 0), `${what} have a critical failure`], [int(s.clean), `${s.clean === 1 ? what.slice(0, -1) : what} with nothing proved wrong`]],
       viz: severityViz(s, what),
-      body: isSite2 ? extraSections : `${commonSections(s, what, engineShort)}${extraSections}`,
+      body: isSite2 ? extraSections : `${s.change && status.mode === "top" && previousMonth(runDir2, status.month) ? changeSection(s, s.change, previousMonth(runDir2, status.month), engineVersion, what) : ""}${commonSections(s, what, engineShort)}${extraSections}`,
       share
     });
     return html;
@@ -10690,6 +10717,7 @@ async function render(runDir2, { publicCopy = true } = {}) {
   const fullFile = path4.join(runDir2, "report.html");
   fs4.writeFileSync(fullFile, build(false));
   const outFile = publicCopy ? writePage(status.mode === "top" && status.month ? `${status.slug}/${status.month}` : status.slug, build(true)) : fullFile;
+  if (status.mode === "top" && status.month) refreshMonthSwitchers(runDir2, status.month, publicCopy ? path4.dirname(outFile) : null);
   return `report: ${path4.relative(process.cwd(), outFile) || outFile} \xB7 ${pagesOf(s.pages)}, ${pc(s.failingPct)} with failures, ${dec(s.meanFailing)} failing elements per page (median ${int(s.medianFailing)})${partial ? " \xB7 run not finished" : ""}`;
 }
 function breadthSection(s, briefLink, what = "pages") {
@@ -10768,6 +10796,117 @@ function allMonths(runDir2) {
       return null;
     }
   }).filter(Boolean);
+}
+async function auditedByDomain(file) {
+  const byRank = /* @__PURE__ */ new Map();
+  const rl = readline2.createInterface({ input: fs4.createReadStream(file), crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line);
+      byRank.set(row.rank, row);
+    } catch {
+    }
+  }
+  const listed = /* @__PURE__ */ new Set();
+  const audited2 = /* @__PURE__ */ new Map();
+  for (const row of [...byRank.values()].sort((a, b) => a.rank - b.rank)) {
+    listed.add(row.domain);
+    if (row.status === "audited" && !audited2.has(row.domain)) audited2.set(row.domain, row);
+  }
+  return { listed, audited: audited2 };
+}
+function compareMonths(before, latestRows, prior2) {
+  const now = { listed: /* @__PURE__ */ new Set(), audited: /* @__PURE__ */ new Map() };
+  for (const row of [...latestRows].sort((a, b) => a.rank - b.rank)) {
+    now.listed.add(row.domain);
+    if (row.status === "audited" && !now.audited.has(row.domain)) now.audited.set(row.domain, row);
+  }
+  const fails = (r) => r.violationElements > 0;
+  const figures = (list2) => ({ sites: list2.length, failingPct: list2.length ? 100 * list2.filter(fails).length / list2.length : 0, meanFailing: list2.length ? list2.reduce((t, r) => t + r.violationElements, 0) / list2.length : 0 });
+  const both = [...now.audited.keys()].filter((d) => before.audited.has(d));
+  const joined = [...now.audited.keys()].filter((d) => !before.audited.has(d));
+  const left = [...before.audited.keys()].filter((d) => !now.audited.has(d));
+  const ruleSites = (rows) => {
+    const c = /* @__PURE__ */ new Map();
+    for (const r of rows) for (const v of r.violations ?? []) c.set(v.id, (c.get(v.id) ?? 0) + 1);
+    return c;
+  };
+  const was = ruleSites(both.map((d) => before.audited.get(d)));
+  const is = ruleSites(both.map((d) => now.audited.get(d)));
+  const assertedBefore = new Set((prior2.rules ?? []).map((r) => r.id));
+  const rules = [.../* @__PURE__ */ new Set([...was.keys(), ...is.keys()])].map((id) => ({ id, before: was.get(id) ?? 0, after: is.get(id) ?? 0, newRule: !assertedBefore.has(id) })).sort((a, b) => Math.abs(b.after - b.before) - Math.abs(a.after - a.before)).slice(0, 6);
+  let toClean = 0;
+  let toFailing = 0;
+  let fewer = 0;
+  let more = 0;
+  for (const d of both) {
+    const a = before.audited.get(d);
+    const b = now.audited.get(d);
+    if (fails(a) && !fails(b)) toClean += 1;
+    if (!fails(a) && fails(b)) toFailing += 1;
+    if (b.violationElements < a.violationElements) fewer += 1;
+    if (b.violationElements > a.violationElements) more += 1;
+  }
+  return {
+    month: prior2.month,
+    engineBefore: prior2.meta?.engine?.version ?? prior2.meta?.engineVersion ?? null,
+    both: { before: figures(both.map((d) => before.audited.get(d))), after: figures(both.map((d) => now.audited.get(d))), toClean, toFailing, fewer, more },
+    joined: { ...figures(joined.map((d) => now.audited.get(d))), newToList: joined.filter((d) => !before.listed.has(d)).length },
+    left: { ...figures(left.map((d) => before.audited.get(d))), offList: left.filter((d) => !now.listed.has(d)).length },
+    rules
+  };
+}
+function changeSection(s, c, previous, engineVersion, what) {
+  const prev = escapeHtml(monthName(c.month));
+  const help = new Map(s.rules.map((r) => [r.id, r.help]));
+  const sameEngine = c.engineBefore && c.engineBefore === engineVersion;
+  const fromTo = (a, b, unit = "") => dec(a) === dec(b) ? `stayed at ${dec(a)}${unit}` : `went from ${dec(a)}${unit} to ${dec(b)}${unit}`;
+  const pair = (f) => `${dec(f.failingPct)}% with a failure and ${dec(f.meanFailing)} failing elements per site`;
+  return `
+      <section class="docs" id="changed" aria-labelledby="changed-title">
+        <h2 id="changed-title">What changed since ${prev}</h2>
+        ${miniStats([[int(c.both.before.sites), `${what} audited in both months`], [int(c.both.toClean), "went from failing to clean"], [int(c.both.toFailing), "went from clean to failing"]])}
+        <p>
+          The share of sites with a failure ${fromTo(previous.failingPct, s.failingPct, "%")}, and failing elements per site ${fromTo(previous.meanFailing, s.meanFailing)}.
+          Three things move these figures between months: the sites themselves, which sites could be audited, and the engine.
+        </p>
+        <p>
+          <strong>The same sites.</strong> On the ${int(c.both.before.sites)} sites audited in both months, the share with a failure ${fromTo(c.both.before.failingPct, c.both.after.failingPct, "%")}
+          and failing elements per site ${fromTo(c.both.before.meanFailing, c.both.after.meanFailing)}.
+          ${int(c.both.toClean)} went from failing to clean and ${int(c.both.toFailing)} from clean to failing; ${int(c.both.fewer)} have fewer failing elements than in ${prev} and ${int(c.both.more)} more.
+        </p>
+        <p>
+          <strong>Which sites were audited.</strong> ${int(c.joined.sites)} sites were audited this month and not in ${prev}, ${c.joined.newToList ? `${int(c.joined.newToList)} of them new to the list and the rest` : "all of them"} unreachable, refused or too slow last time: ${pair(c.joined)}.
+          The ${int(c.left.sites)} audited in ${prev} and not this month${c.left.offList ? `, ${int(c.left.offList)} of them gone from the list,` : ""} had ${pair(c.left)}.
+        </p>
+        <p>
+          <strong>The engine.</strong> ${sameEngine ? `Both months ran on version ${escapeHtml(engineVersion)}, so the engine moved nothing.` : `${prev} ran on version ${escapeHtml(c.engineBefore ?? "unknown")} and this month on ${escapeHtml(engineVersion)}. A change in the engine changes what is counted, not the sites, so any rule below may have moved for either reason.${c.rules.some((r) => r.newRule) ? " A rule marked new found nothing anywhere in " + prev + ": the earlier engine did not assert it." : ""}`}
+        </p>
+        <p>The rules that moved most on the sites audited in both months:</p>
+        ${table(
+    [["Rule", false], [`Sites, ${prev}`, true], ["Sites, this month", true], ["Change", true]],
+    c.rules.map((r) => `<tr><th scope="row">${ruleCell(r.id, help.get(r.id) ?? "")}${r.newRule ? ' <span class="dim">new</span>' : ""}</th>${num(int(r.before))}${num(int(r.after))}${num(`${r.after > r.before ? "+" : r.after < r.before ? "\u2212" : ""}${int(Math.abs(r.after - r.before))}`)}</tr>`).join(""),
+    { label: `The rules that moved most since ${prev}` }
+  )}
+      </section>`;
+}
+function monthSwitcher(parent, own, isPublic) {
+  const months = fs4.readdirSync(parent).filter((f) => /^\d{4}-\d{2}$/.test(f) && fs4.existsSync(path4.join(parent, f, "summary.json"))).sort().reverse();
+  if (!months.includes(own)) months.unshift(own);
+  return `<!--months--><details class="months"><summary>${escapeHtml(monthName(own))}<span class="visually-hidden">, choose another month</span></summary><ul>${months.map((m) => `<li><a href="../${m}/${isPublic ? "" : "report.html"}"${m === own ? ' aria-current="page"' : ""}>${escapeHtml(monthName(m))}</a></li>`).join("")}</ul></details><!--/months-->`;
+}
+function refreshMonthSwitchers(runDir2, own, publicDir) {
+  const parent = path4.dirname(runDir2);
+  for (const m of fs4.readdirSync(parent).filter((f) => /^\d{4}-\d{2}$/.test(f) && f !== own)) {
+    const pages = [[path4.join(parent, m, "report.html"), false], ...publicDir ? [[path4.join(path4.dirname(publicDir), m, "index.html"), true]] : []];
+    for (const [file, isPublic] of pages) {
+      if (!fs4.existsSync(file)) continue;
+      const html = fs4.readFileSync(file, "utf8");
+      const next = html.replace(/<!--months-->[\s\S]*?<!--\/months-->/, monthSwitcher(parent, m, isPublic));
+      if (next !== html) fs4.writeFileSync(file, next);
+    }
+  }
 }
 function previousMonth(runDir2, month) {
   const parent = path4.dirname(runDir2);
@@ -11048,7 +11187,10 @@ var meta = {
   sameHost,
   scope,
   query: keepQuery,
-  list: listMeta ? { file: path5.basename(listFile), id: listMeta.id, date: listMeta.date, source: listMeta.source, name: listMeta.name, url: listMeta.url } : listFile ? { file: path5.basename(listFile) } : null,
+  // The list likewise: a re-render after the next list came out stamped
+  // it on the run, and August and September named the August list where
+  // their sites are the July list's.
+  list: prior?.list ?? (listMeta ? { file: path5.basename(listFile), id: listMeta.id, date: listMeta.date, source: listMeta.source, name: listMeta.name, url: listMeta.url } : listFile ? { file: path5.basename(listFile) } : null),
   total: list?.length ?? null,
   count: isSite ? max : Number.isFinite(count) ? count : list?.length ?? null,
   engineVersion: prior?.engineVersion ?? project_config_default.engine.version,

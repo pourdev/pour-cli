@@ -8642,6 +8642,15 @@ main{display:block}
 .docs{max-width:calc(var(--measure) + 2*var(--gutter));margin-inline:auto;padding:clamp(3.8rem,7.5vh,5.6rem) var(--gutter) 0}
 .intro{padding-top:clamp(4.5rem,9vh,7rem)}
 .eyebrow{font-family:var(--font);font-size:.8rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 1.2rem}
+.months{display:inline-block;position:relative}
+.months>summary{display:inline-flex;align-items:center;gap:.5em;list-style:none;cursor:pointer;color:var(--text);border-radius:4px}
+.months>summary::-webkit-details-marker{display:none}
+.months>summary::after{content:'';width:5px;height:5px;margin-top:-3px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg)}
+.months[open]>summary::after{margin-top:3px;transform:rotate(225deg)}
+.months ul{position:absolute;z-index:20;top:calc(100% + .5rem);left:-.6rem;min-width:12rem;margin:0;padding:.35rem;list-style:none;background:var(--surface);border:1px solid var(--hair2);border-radius:8px;box-shadow:var(--shadow)}
+.months a{display:block;padding:.55rem .6rem;border-radius:5px;color:var(--muted);text-decoration:none;white-space:nowrap}
+.months a[aria-current]{color:var(--text)}
+.months a:hover,.months a[aria-current]:hover{background:var(--text);color:var(--bg)}
 h1{font:620 clamp(2.2rem,4.6vw,3.6rem)/1.05 var(--font);letter-spacing:-.02em;margin:0}
 h2{font:600 clamp(1.55rem,2.8vw,2.2rem)/1.15 var(--font);letter-spacing:-.015em;margin:0}
 .lede{margin:1.5rem 0 0;font-size:1.125rem;color:var(--muted)}

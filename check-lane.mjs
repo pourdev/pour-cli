@@ -8416,6 +8416,10 @@ var SET_TYPES = {
   core: /* @__PURE__ */ new Set(["core"]),
   supplemental: /* @__PURE__ */ new Set(["core", "supplemental"])
 };
+var SET_SCOPES = {
+  core: "core requirements",
+  supplemental: "core and supplemental requirements"
+};
 var RENAMED_SETS = { bronze: "core", silver: "supplemental", gold: "supplemental" };
 var TYPE_LABELS = {
   core: "Core",
@@ -8808,6 +8812,9 @@ function ruleMatchesTags(rule, tags) {
   if (rule.tags.some((tag) => tags.includes(tag))) return true;
   const set = checkSetFromTags(tags);
   return Boolean(set) && ruleInCheckSet(rule.id, set);
+}
+function standardFor(set) {
+  return { ...draftInfo, checkSet: set, scope: SET_SCOPES[set] };
 }
 
 // src/vscode/rules-list.js
@@ -9455,5 +9462,6 @@ export {
   auditSource,
   laneFor,
   requirementsForRule,
-  rules_default as rules
+  rules_default as rules,
+  standardFor
 };

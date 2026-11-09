@@ -63,7 +63,7 @@ function positions(text) {
 async function loadLane(scriptDir) {
   const bundled = path.join(scriptDir, 'check-lane.mjs');
   if (existsSync(bundled)) {
-    const { auditSource, WCAG_TAGS, laneFor, rules, requirementsForRule } = await import(pathToFileURL(bundled).href);
+    const { auditSource, WCAG_TAGS, laneFor, rules, requirementsForRule, standardFor } = await import(pathToFileURL(bundled).href);
     return { auditSource, WCAG_TAGS, laneFor, requirementsForRule, standardFor, rulesMeta: new Map(rules.map((r) => [r.id, r])) };
   }
   const src = (...parts) => pathToFileURL(path.join(scriptDir, '..', '..', 'src', ...parts)).href;
