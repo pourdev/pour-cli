@@ -291,6 +291,7 @@ function composite(top, bottom) {
 var backgroundCache = /* @__PURE__ */ new WeakMap();
 var opacityCache = /* @__PURE__ */ new WeakMap();
 var opacityAnimatorsCache = null;
+var revealedNodes = /* @__PURE__ */ new WeakSet();
 var mediaRectsCache = null;
 var panelRectsCache = null;
 var pseudoCache = /* @__PURE__ */ new WeakMap();
@@ -490,6 +491,7 @@ function restingOpacity(element) {
   const animators = opacityAnimators(element.ownerDocument);
   let product = 1;
   for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
+    if (revealedNodes.has(node)) continue;
     if (animators.has(node)) {
       const rest = animators.get(node);
       product *= rest === null ? 1 : rest;
@@ -499,17 +501,46 @@ function restingOpacity(element) {
   }
   return product;
 }
+function pendingReveal(element) {
+  const view = element.ownerDocument.defaultView;
+  const outOfView = (rect) => !(rect.bottom > 0 && rect.top < view.innerHeight);
+  if (!view || !outOfView(element.getBoundingClientRect())) return [];
+  const nodes = [];
+  for (let node = element; node && node.nodeType === 1; node = node.parentElement ?? node.getRootNode()?.host) {
+    const style = getComputedStyle(node);
+    if (!((parseFloat(style.opacity) || 0) < 1)) continue;
+    const properties = style.transitionProperty.split(",").map((p) => p.trim());
+    const durations = style.transitionDuration.split(",").map((d) => parseFloat(d) || 0);
+    if (!properties.some((p, i) => (p === "opacity" || p === "all") && durations[i % durations.length] > 0)) continue;
+    const parent = node.parentElement;
+    const settled = parent && [...childrenOf(parent)].some((other) => other !== node && other.tagName === node.tagName && (parseFloat(getComputedStyle(other).opacity) || 0) >= 1 && outOfView(other.getBoundingClientRect()));
+    if (settled) return [];
+    nodes.push(node);
+  }
+  return nodes;
+}
+async function withRevealed(nodes, judge) {
+  for (const node of nodes) revealedNodes.add(node);
+  opacityCache = /* @__PURE__ */ new WeakMap();
+  try {
+    return await judge();
+  } finally {
+    for (const node of nodes) revealedNodes.delete(node);
+    opacityCache = /* @__PURE__ */ new WeakMap();
+  }
+}
 function cumulativeOpacity(element) {
   if (!element || element.nodeType !== 1) return 1;
   let cached = opacityCache.get(element);
   if (cached === void 0) {
     const parent = element.parentElement ?? element.getRootNode()?.host ?? null;
-    cached = (parseFloat(getComputedStyle(element).opacity) || 0) * cumulativeOpacity(parent);
+    cached = (revealedNodes.has(element) ? 1 : parseFloat(getComputedStyle(element).opacity) || 0) * cumulativeOpacity(parent);
     opacityCache.set(element, cached);
   }
   return cached;
 }
 function nodeRestingOpacity(node) {
+  if (revealedNodes.has(node)) return 1;
   const animators = opacityAnimators(node.ownerDocument);
   if (animators.has(node)) {
     const rest = animators.get(node);
@@ -3531,6 +3562,17 @@ function createContrastRule({ id, name, tags, help, helpUrl, thresholds }) {
         message: "This text sits in a section whose background image is lazy-loaded and has not loaded yet, so it was measured against a background visitors never see. Scroll the page to this text and run the audit again, or check it by eye."
       };
     }
+    const fading = pendingReveal(element);
+    if (fading.length) {
+      const revealed = await withRevealed(fading, () => judge(element, helpers));
+      if (revealed.status !== "fail") {
+        const dim = Math.round(fading.reduce((product, node) => product * (parseFloat(getComputedStyle(node).opacity) || 0), 1) * 100);
+        return {
+          status: "incomplete",
+          message: `This text starts out of view at ${dim}% opacity under an element that transitions its opacity, the way a scroll reveal fades content in. At full opacity it meets the minimum. Scroll to it and check that it ends at full opacity.`
+        };
+      }
+    }
     const glyph = glyphNotWords(element, helpers.ownText(element), helpers.accessibleName);
     if (glyph) {
       const ratio = verdict.data?.ratio;
@@ -4074,14 +4116,26 @@ function containsComposed(ancestor, element) {
   return false;
 }
 function outsideHiddenOverflow(element, rect) {
-  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+  const { body, documentElement } = element.ownerDocument;
+  let { left, right, top, bottom } = rect;
+  for (let parent = element.parentElement; parent && parent !== body && parent !== documentElement; parent = parent.parentElement) {
     const style = getComputedStyle(parent);
     if (style.display === "contents") continue;
     const x = /^(hidden|clip)$/.test(style.overflowX);
     const y = /^(hidden|clip)$/.test(style.overflowY);
-    if (!x && !y) continue;
+    const scrollsX = /^(auto|scroll)$/.test(style.overflowX);
+    const scrollsY = /^(auto|scroll)$/.test(style.overflowY);
+    if (!x && !y && !scrollsX && !scrollsY) continue;
     const clip = parent.getBoundingClientRect();
-    if (x && (clip.width === 0 || rect.right <= clip.left || rect.left >= clip.right) || y && (clip.height === 0 || rect.bottom <= clip.top || rect.top >= clip.bottom)) return true;
+    if (x && (clip.width === 0 || right <= clip.left || left >= clip.right) || y && (clip.height === 0 || bottom <= clip.top || top >= clip.bottom)) return true;
+    if (scrollsX) {
+      left = clip.left;
+      right = clip.right;
+    }
+    if (scrollsY) {
+      top = clip.top;
+      bottom = clip.bottom;
+    }
   }
   return false;
 }
@@ -4257,7 +4311,7 @@ function createTargetSizeRule({ id, tags, help, helpUrl, min, spacingException }
       for (let i = 0; i < elements.length; i++) {
         if (i % 64 === 0) await yieldToMain();
         const r = rects[i], element = elements[i];
-        laidOut.push(r.width > 0 && r.height > 0 && !element.matches(":disabled") && !isInert(element) && !isHiddenFromPointer(element, r) && !layoutSkipped(element));
+        laidOut.push(r.width > 0 && r.height > 0 && !element.matches(":disabled") && !isInert(element) && !isHiddenFromPointer(element, r) && !layoutSkipped(element) && !outsideHiddenOverflow(element, r));
       }
       const undersized = rects.map((r, i) => laidOut[i] && (r.width < min || r.height < min));
       const encloses = (a, b) => a.left <= b.left && a.right >= b.right && a.top <= b.top && a.bottom >= b.bottom;
