@@ -317,3 +317,5 @@ and runs the server through `npx`, so nothing else has to be installed:
 ## License
 
 MIT
+
+pour is a registered trade mark in the UK, number UK00004432542. The MIT licence covers the code, not the name: forks are welcome under a name of their own.

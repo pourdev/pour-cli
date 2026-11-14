@@ -47,3 +47,5 @@ MIT. The command and this plugin:
 [pourdev/pour-cli](https://github.com/pourdev/pour-cli). The engine:
 [pourdev/pour-engine](https://github.com/pourdev/pour-engine). More at
 [pour.dev](https://pour.dev).
+
+pour is a registered trade mark in the UK, number UK00004432542. The MIT licence covers the code, not the name: forks are welcome under a name of their own.
