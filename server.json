@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.pourdev/pour",
+  "title": "pour",
+  "description": "WCAG 2.2 accessibility audits for agents: findings, focus order and page screenshots.",
+  "repository": {
+    "url": "https://github.com/pourdev/pour-cli",
+    "source": "github"
+  },
+  "websiteUrl": "https://pour.dev",
+  "version": "0.3.32",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "pour-cli",
+      "version": "0.3.32",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}
